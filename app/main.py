@@ -2,163 +2,146 @@
 from __future__ import annotations
 
 import os
-import ssl
+import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import asyncpg
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
-# ----------------------------------------------------------------------
-# 读取环境变量
-# ----------------------------------------------------------------------
-DB_DSN = os.getenv("DATABASE_URL", "").strip()
-API_KEYS = [k.strip() for k in os.getenv("API_KEYS", "dev_key_123").split(",") if k.strip()]
+# 子路由（已在 app/routers/ 下）
+#   meta.py   -> APIRouter(prefix="/meta",  tags=["meta"])
+#   ports.py  -> APIRouter(prefix="/ports", tags=["ports"])
+#   hs.py     -> APIRouter(prefix="/hs",    tags=["trade"])
+from app.routers import meta, ports, hs  # noqa: E402
 
-# ----------------------------------------------------------------------
-# FastAPI 应用
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# Config & Helpers
+# ---------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def _normalize_dsn(raw: str) -> str:
+    """
+    确保 DATABASE_URL 适配 asyncpg：
+      - 如果没带 sslmode，则追加 sslmode=require
+      - 如果没带 connect_timeout，则追加 connect_timeout=10
+    注意：这里假设你使用的是 Supabase **pooler** (端口 6543)。
+    """
+    if "?" in raw:
+        base, qs = raw.split("?", 1)
+    else:
+        base, qs = raw, ""
+
+    params = dict(urllib.parse.parse_qsl(qs, keep_blank_values=True))
+
+    # 避免把 verify-ca/verify-full 搞错；没有就默认 require
+    params.setdefault("sslmode", "require")
+    params.setdefault("connect_timeout", "10")
+
+    return f"{base}?{urllib.parse.urlencode(params)}"
+
+
+# ---------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------
+
 app = FastAPI(
     title="PortPulse & TradeMomentum API",
     version="1.1",
-    docs_url="/docs",
-    redoc_url=None,
     openapi_url="/openapi.json",
 )
 
+# CORS（按需放开）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 如需限制来源可改成你的域名列表
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_origins=["*"],
     allow_headers=["*"],
+    allow_methods=["*"],
 )
 
-# ----------------------------------------------------------------------
-# 依赖：API Key 校验（Header: X-API-Key）
-# ----------------------------------------------------------------------
-async def require_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> None:
-    # 若未配置 API_KEYS，则不强制校验（开发环境更方便）
-    if not API_KEYS:
-        return
-    if not x_api_key or x_api_key not in API_KEYS:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")
+# 数据库 DSN
+RAW_DSN = os.getenv("DATABASE_URL", "").strip()
+DB_DSN: Optional[str] = _normalize_dsn(RAW_DSN) if RAW_DSN else None
 
-# ----------------------------------------------------------------------
-# 启动 / 关闭：初始化/释放数据库连接池
-# 说明：你的 Supabase 连接串里已经带 sslmode=require，这里不强制传自定义 ssl_ctx。
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# Startup / Shutdown: asyncpg 连接池
+# ---------------------------------------------------------------------
+
 @app.on_event("startup")
 async def startup() -> None:
     app.state.pool = None
     app.state.db_error = None
 
     if not DB_DSN:
-        app.state.db_error = "DATABASE_URL not set"
+        app.state.db_error = "DATABASE_URL is not set"
         return
 
     try:
-        # 如需自定义证书策略，可打开下方几行（一般不需要）
-        # ssl_ctx = ssl.create_default_context()
-        # ssl_ctx.check_hostname = False
-        # ssl_ctx.verify_mode = ssl.CERT_NONE
-
         app.state.pool = await asyncpg.create_pool(
             dsn=DB_DSN,
             min_size=1,
             max_size=5,
-            command_timeout=30,
-            # ssl=ssl_ctx,  # 如果你想强制自定义 SSL，再放开这行
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # 不中断启动，用于 /v1/health 反馈详细错误
         app.state.db_error = f"{type(e).__name__}: {e}"
-        app.state.pool = None
-
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    pool: Optional[asyncpg.Pool] = getattr(app.state, "pool", None)
-    if pool:
+    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
+    if pool is not None:
         await pool.close()
-        app.state.pool = None
 
-# ----------------------------------------------------------------------
-# 工具：获取连接池（给路由里通过 Depends 使用）
-# ----------------------------------------------------------------------
-async def get_pool() -> asyncpg.Pool:
-    pool: Optional[asyncpg.Pool] = getattr(app.state, "pool", None)
-    if not pool:
-        raise HTTPException(status_code=503, detail=getattr(app.state, "db_error", "DB pool not initialized"))
-    return pool
 
-# ----------------------------------------------------------------------
-# 恢复业务路由（根据你的项目结构导入）
-# 若文件路径不同，请改成你的真实模块路径
-# ----------------------------------------------------------------------
-try:
-    from app.routers.meta import router as meta_router
-except Exception:  # 兼容可能的结构差异
-    meta_router = None  # type: ignore
+# ---------------------------------------------------------------------
+# Routes: 根路径 & 健康检查
+# ---------------------------------------------------------------------
 
-try:
-    from app.routers.ports import router as ports_router
-except Exception:
-    ports_router = None  # type: ignore
-
-try:
-    from app.routers.trade import router as trade_router
-except Exception:
-    trade_router = None  # type: ignore
-
-# 统一加上 API Key 依赖（如某些路由无需鉴权，可在对应模块里单独调整）
-if meta_router:
-    app.include_router(
-        meta_router,
-        prefix="/v1/meta",
-        tags=["meta"],
-        dependencies=[Depends(require_api_key)],
-    )
-if ports_router:
-    app.include_router(
-        ports_router,
-        prefix="/v1/ports",
-        tags=["ports"],
-        dependencies=[Depends(require_api_key)],
-    )
-if trade_router:
-    # 你的接口是 /v1/hs/{code}/imports，所以这里用 /v1/hs 作为前缀
-    app.include_router(
-        trade_router,
-        prefix="/v1/hs",
-        tags=["trade"],
-        dependencies=[Depends(require_api_key)],
-    )
-
-# ----------------------------------------------------------------------
-# 基础路由
-# ----------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
-    # 直接跳 Swagger
+    # 直接跳到 Swagger
     return RedirectResponse(url="/docs", status_code=307)
 
-@app.get("/v1/health", tags=["default"])
+@app.get("/v1/health")
 async def health() -> Dict[str, Any]:
     """
-    存活与DB连通性检查。
-    注意：SQL 必须用英文（避免某些运行时翻译导致 SQL 解析问题）
+    基础存活 & 数据库连通性检查
+    重要：SQL 保持英文，避免翻译引起语法问题
     """
-    from datetime import datetime, timezone
-
-    ts = datetime.now(timezone.utc).isoformat()
     pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
     if not pool:
-        return {"ok": False, "ts": ts, "db": getattr(app.state, "db_error", "not-initialized")}
+        return {"ok": False, "ts": _now_iso(), "db": getattr(app.state, "db_error", "not-initialized")}
 
     try:
         async with pool.acquire() as conn:
-            ok = await conn.fetchval("SELECT 1;")
-            return {"ok": bool(ok == 1), "ts": ts}
-    except Exception as e:
-        return {"ok": False, "ts": ts, "db": f"{type(e).__name__}: {e}"}
+            # 不要翻译 SELECT
+            await conn.fetchval("SELECT 1;")
+        return {"ok": True, "ts": _now_iso()}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "ts": _now_iso(), "db": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------------
+# 业务路由挂载（父级只挂 /v1，子路由自带 /meta /ports /hs 前缀）
+# 这样最终路径就是：
+#   /v1/meta/sources
+#   /v1/ports/{unlocode}/snapshot
+#   /v1/ports/{unlocode}/dwell
+#   /v1/hs/{code}/imports
+# ---------------------------------------------------------------------
+
+app.include_router(meta.router,  prefix="/v1")
+app.include_router(ports.router, prefix="/v1")
+app.include_router(hs.router,    prefix="/v1")
+
+
+# 若需本地调试：`uvicorn app.main:app --reload --port 8000`
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
