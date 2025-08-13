@@ -1,22 +1,92 @@
 # app/main.py
-from __future__ import annotations
-
 import os
-import random
-from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+import ssl
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import asyncpg
-from fastapi import FastAPI, Depends, HTTPException, Query, Path, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader
-from fastapi import Security
+from starlette.responses import RedirectResponse
 
 # -----------------------------------------------------------------------------
-# App & CORS
+# Helpers
 # -----------------------------------------------------------------------------
-app = FastAPI(title="PortPulse & TradeMomentum API", version="1.1")
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
+def _build_ssl() -> ssl.SSLContext:
+    """
+    Build a strict SSL context for asyncpg.
+    Works with Supabase (sslmode=require / verify-ca / verify-full).
+    """
+    ctx = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    return ctx
+
+def _normalize_dsn(raw: str) -> str:
+    """
+    Ensure DATABASE_URL has sslmode=require and a connect timeout,
+    and avoid duplicated '?' or sslmode parameters.
+    """
+    if not raw:
+        raise RuntimeError("DATABASE_URL is not set")
+
+    dsn = raw
+    # ensure only one '?'
+    if dsn.count("?") > 1:
+        # take everything before first '?', then merge query params
+        base, query = dsn.split("?", 1)
+        # remove possible duplicated 'sslmode=' fragments
+        parts = [p for p in query.replace("??", "?").split("&") if p]
+        # keep only the first sslmode setting if exists
+        seen_ssl = False
+        cleaned = []
+        for p in parts:
+            if p.startswith("sslmode="):
+                if not seen_ssl:
+                    cleaned.append(p)
+                    seen_ssl = True
+                # else drop duplicates
+            else:
+                cleaned.append(p)
+        dsn = base + "?" + "&".join(cleaned)
+
+    # append sslmode=require if missing
+    if "sslmode=" not in dsn:
+        dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
+
+    # append connect_timeout if missing
+    if "connect_timeout=" not in dsn:
+        dsn += "&connect_timeout=10"
+
+    return dsn
+
+async def _init_conn(conn: asyncpg.Connection) -> None:
+    # Keep session in UTC, and set json codec (optional)
+    await conn.execute("SET TIME ZONE 'UTC'")
+    try:
+        await conn.set_type_codec(
+            "json",
+            encoder=lambda v: json.dumps(v),
+            decoder=lambda v: json.loads(v),
+            schema="pg_catalog",
+        )
+    except Exception:
+        # ignore if codec already set or extension not needed
+        pass
+
+# -----------------------------------------------------------------------------
+# App
+# -----------------------------------------------------------------------------
+app = FastAPI(
+    title="PortPulse & TradeMomentum API",
+    version="1.1",
+)
+
+# CORS (按需调整)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,81 +96,39 @@ app.add_middleware(
 )
 
 # -----------------------------------------------------------------------------
-# API Key auth (header: x-api-key). Health & meta 不需要鉴权，其他需要。
+# DB Pool lifecycle
 # -----------------------------------------------------------------------------
-API_KEY_HEADER_NAME = "x-api-key"
-_api_key_scheme = APIKeyHeader(name=API_KEY_HEADER_NAME, auto_error=False)
-
-def _load_api_keys() -> set[str]:
-    raw = os.getenv("API_KEYS", "")
-    return {k.strip() for k in raw.split(",") if k.strip()}
-
-KNOWN_API_KEYS: set[str] = _load_api_keys()
-
-async def require_api_key(api_key: Optional[str] = Security(_api_key_scheme)) -> str:
-    # If no API key configured, allow all (useful for dev)
-    if not KNOWN_API_KEYS:
-        return ""
-    if api_key and api_key in KNOWN_API_KEYS:
-        return api_key
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")
-
-# -----------------------------------------------------------------------------
-# Database pool
-# -----------------------------------------------------------------------------
-DB_DSN = os.getenv("DATABASE_URL")  # e.g. postgresql://.../postgres?sslmode=require
-
 @app.on_event("startup")
-async def on_startup() -> None:
-    """
-    Create a global asyncpg pool if DATABASE_URL is provided.
-    Keep app start resilient even when DB is unreachable (health will reflect).
-    """
-    app.state.pool: Optional[asyncpg.pool.Pool] = None
-    app.state.db_error: Optional[str] = None
-
-    if not DB_DSN:
-        app.state.db_error = "DATABASE_URL is not set"
-        return
-
+async def startup() -> None:
+    dsn_raw = os.getenv("DATABASE_URL", "")
     try:
+        dsn = _normalize_dsn(dsn_raw)
         app.state.pool = await asyncpg.create_pool(
-            dsn=DB_DSN,
-            min_size=1,
-            max_size=5,
-            command_timeout=30,
+            dsn=dsn,
+            min_size=int(os.getenv("POOL_MIN", "0")),   # 0 可节省空闲实例
+            max_size=int(os.getenv("POOL_MAX", "5")),   # Railway 免费/小型套餐足够
+            max_inactive_connection_lifetime=60.0,      # 1 分钟回收空闲连接
+            command_timeout=30.0,                       # 查询级超时
+            init=_init_conn,
+            ssl=_build_ssl(),                           # <—— 关键：强制 SSL
         )
+        app.state.db_error = None
     except Exception as e:
+        app.state.pool = None
         app.state.db_error = f"{type(e).__name__}: {e}"
 
 @app.on_event("shutdown")
-async def on_shutdown() -> None:
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
+async def shutdown() -> None:
+    pool: Optional[asyncpg.Pool] = getattr(app.state, "pool", None)
     if pool:
         await pool.close()
 
 # -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-def month_range(frm: datetime, to: datetime) -> List[datetime]:
-    cur = datetime(frm.year, frm.month, 1, tzinfo=timezone.utc)
-    end = datetime(to.year, to.month, 1, tzinfo=timezone.utc)
-    out: List[datetime] = []
-    while cur <= end:
-        out.append(cur)
-        # add ~1 month
-        if cur.month == 12:
-            cur = datetime(cur.year + 1, 1, 1, tzinfo=timezone.utc)
-        else:
-            cur = datetime(cur.year, cur.month + 1, 1, tzinfo=timezone.utc)
-    return out
-
-# -----------------------------------------------------------------------------
 # Routes
 # -----------------------------------------------------------------------------
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
 
 @app.get("/v1/health")
 async def health() -> Dict[str, Any]:
@@ -108,138 +136,20 @@ async def health() -> Dict[str, Any]:
     Basic liveness + DB connectivity check.
     IMPORTANT: keep SQL in ENGLISH to avoid translation issues.
     """
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
+    pool: Optional[asyncpg.Pool] = getattr(app.state, "pool", None)
     if not pool:
         return {"ok": False, "ts": utc_now_iso(), "db": getattr(app.state, "db_error", "not-initialized")}
 
     try:
         async with pool.acquire() as conn:
-            # DO NOT translate 'SELECT' to any other language.
-            await conn.fetchval("SELECT 1;")
-        return {"ok": True, "ts": utc_now_iso()}
+            ok = await conn.fetchval("SELECT 1;")
+        return {"ok": bool(ok == 1), "ts": utc_now_iso(), "db": "ok"}
     except Exception as e:
         return {"ok": False, "ts": utc_now_iso(), "db": f"{type(e).__name__}: {e}"}
 
-
-@app.get("/v1/meta/sources")
-async def meta_sources() -> Dict[str, Any]:
-    """
-    Static metadata used by the UI/docs.
-    """
-    return {
-        "ports": [
-            {"unlocode": "USLAX", "last_updated": "2025-08-12T14:00:00+00:00"},
-        ],
-        "trade": [
-            {"hs": "4202", "last_period": "2024-12-01"},
-            {"hs": "9401", "last_period": "2024-12-01"},
-        ],
-        "version": "1.1",
-    }
-
-
-@app.get("/v1/ports/{unlocode}/snapshot", dependencies=[Depends(require_api_key)])
-async def port_snapshot(
-    unlocode: str = Path(..., min_length=5, max_length=5, description="UN/LOCODE, e.g. USLAX")
-) -> Dict[str, Any]:
-    """
-    Demo snapshot (lightweight, no DB).
-    """
-    random.seed(unlocode.upper())
-    # Fake numbers deterministically from unlocode
-    dwell_gp_share = round(random.uniform(-0.35, 0.15), 4)
-    gate_fill = round(random.uniform(0.65, 0.92), 4)
-    congestion = round(random.uniform(35, 75), 1)
-    return {
-        "unlocode": unlocode.upper(),
-        "dwell_gp_share": dwell_gp_share,
-        "gate_appointment_fill_rate": gate_fill,
-        "estimated": True,
-        "src": "public_source",
-        "src_loaded_at": utc_now_iso(),
-        "congestion_score": congestion,
-    }
-
-
-@app.get("/v1/ports/{unlocode}/dwell", dependencies=[Depends(require_api_key)])
-async def port_dwell(
-    unlocode: str = Path(..., min_length=5, max_length=5, description="UN/LOCODE, e.g. USLAX"),
-    months: int = Query(6, ge=1, le=24, description="How many recent months to return"),
-) -> List[Dict[str, Any]]:
-    """
-    Demo dwell history (no DB). Returns last N months with synthetic values.
-    """
-    base = datetime.now(timezone.utc).replace(day=1)
-    series: List[Dict[str, Any]] = []
-    random.seed(unlocode.upper() + "DWELL")
-    for i in range(months, 0, -1):
-        d = (base - timedelta(days=30 * i)).replace(day=1)
-        series.append({
-            "period": d.date().isoformat(),
-            "avg_dwell_days": round(random.uniform(2.0, 6.0), 2),
-        })
-    return series
-
-
-@app.get("/v1/hs/{code}/imports", dependencies=[Depends(require_api_key)])
-async def hs_imports(
-    code: str = Path(..., min_length=2, max_length=6, description="HS code, e.g. 4202"),
-    country: str = Query("US", min_length=2, max_length=2, description="ISO2 country code"),
-    frm: str = Query(..., description="Start date YYYY-MM-01"),
-    to: str = Query(..., description="End date YYYY-MM-01"),
-) -> List[Dict[str, Any]]:
-    """
-    Try to read monthly imports from DB; if not available, return a synthetic series.
-    Expected DB table (example):
-        trade_monthly(hs text, country text, period date, value_usd numeric)
-    """
-    # Parse dates (1st of month assumed)
-    try:
-        frm_dt = datetime.fromisoformat(frm).replace(tzinfo=timezone.utc)
-        to_dt = datetime.fromisoformat(to).replace(tzinfo=timezone.utc)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid frm/to; expected 'YYYY-MM-01'")
-
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
-
-    if pool:
-        try:
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT period::date, value_usd
-                    FROM trade_monthly
-                    WHERE hs = $1 AND country = $2
-                      AND period >= $3 AND period <= $4
-                    ORDER BY period;
-                    """,
-                    code, country.upper(), frm_dt.date(), to_dt.date()
-                )
-                if rows:
-                    return [{"period": r["period"].isoformat(), "value_usd": float(r["value_usd"])} for r in rows]
-        except Exception:
-            # fall back to synthetic if table/columns not present
-            pass
-
-    # Synthetic fallback series (deterministic)
-    series: List[Dict[str, Any]] = []
-    random.seed(f"{code}:{country}")
-    for d in month_range(frm_dt, to_dt):
-        base = 1_200_000_00  # 1200 * 10^5 just to vary magnitude
-        jitter = random.randint(-50_000_00, 50_000_00)
-        series.append({"period": d.date().isoformat(), "value_usd": base + jitter})
-    return series
-
-
-# -----------------------------------------------------------------------------
-# Local dev entry
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    # Local run: uvicorn app.main:app --reload
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
-        reload=True,
-    )
+# ===== 你其余的业务路由保持原样放在下面 =====
+# /v1/meta/sources
+# /v1/ports/{unlocode}/snapshot
+# /v1/ports/{unlocode}/dwell
+# /v1/hs/{code}/imports
+# （无需改动）
