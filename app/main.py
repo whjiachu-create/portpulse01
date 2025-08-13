@@ -28,6 +28,17 @@ app.add_middleware(
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+import os
+from fastapi import Depends, Header, HTTPException, status
+
+API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
+
+async def require_api_key(x_api_key: str | None = Header(None, alias="X-API-Key")):
+    if not API_KEYS:  # 未配置 API_KEYS 就直接放行（按需）
+        return
+    if not x_api_key or x_api_key not in API_KEYS:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    
 # ---- Startup / Shutdown ----
 @app.on_event("startup")
 async def startup() -> None:
@@ -79,3 +90,39 @@ async def health() -> Dict[str, Any]:
         return {"ok": True, "ts": utc_now_iso()}
     except Exception as e:
         return {"ok": False, "ts": utc_now_iso(), "db": f"{type(e).__name__}: {e}"}
+    # ==== Business routers mounting (paste into app/main.py) ====
+from fastapi import Depends
+import importlib
+
+# 你前面已添加过的 API Key 依赖（如果还没有，就把 require_api_key 一起贴上）
+# from fastapi import Header, HTTPException, status
+# import os
+# API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
+# async def require_api_key(x_api_key: str | None = Header(None, alias="X-API-Key")):
+#     if not API_KEYS:
+#         return
+#     if not x_api_key or x_api_key not in API_KEYS:
+#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+def _load_router(*module_names: str):
+    """按给定模块名顺序尝试导入，成功则返回该模块的 router 变量。"""
+    for name in module_names:
+        try:
+            mod = importlib.import_module(name)
+            r = getattr(mod, "router", None)
+            if r is not None:
+                return r
+        except ModuleNotFoundError:
+            continue
+    return None
+
+# 尝试从 app/routes 或 app/routers 里加载你之前的三个路由模块
+meta_router  = _load_router("app.routes.meta",  "app.routers.meta")
+ports_router = _load_router("app.routes.ports", "app.routers.ports")
+hs_router    = _load_router("app.routes.hs",    "app.routers.hs", "app.routes.trade", "app.routers.trade")
+
+# 逐个挂载（没找到的会跳过，不影响启动）
+for r, tag in [(meta_router, "meta"), (ports_router, "ports"), (hs_router, "trade")]:
+    if r:
+        app.include_router(r, prefix="/v1", tags=[tag], dependencies=[Depends(require_api_key)])
+# ==== end ====
