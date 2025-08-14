@@ -98,6 +98,21 @@ async def shutdown() -> None:
     if pool is not None:
         await pool.close()
 
+# 放在 app = FastAPI(...) 下面，路由挂载之前
+from fastapi.responses import JSONResponse
+from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
+
+@app.exception_handler(UndefinedTableError)
+async def handle_no_table(_, exc: UndefinedTableError):
+    return JSONResponse(status_code=424, content={"error": "table_not_found", "detail": str(exc)})
+
+@app.exception_handler(UndefinedColumnError)
+async def handle_no_column(_, exc: UndefinedColumnError):
+    return JSONResponse(status_code=424, content={"error": "column_not_found", "detail": str(exc)})
+
+@app.exception_handler(DataError)
+async def handle_data_error(_, exc: DataError):
+    return JSONResponse(status_code=400, content={"error": "bad_input", "detail": str(exc)})
 
 # ---------------------------------------------------------------------
 # Routes: 根路径 & 健康检查
