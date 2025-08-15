@@ -78,6 +78,28 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
+from fastapi.openapi.utils import get_openapi
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="PortPulse & TradeMomentum API",
+        version="1.1",
+        description="Operational port metrics and trade flows",
+        routes=app.routes,
+    )
+    # 定义 API Key 安全方案（请求头 X-API-Key）
+    comps = openapi_schema.setdefault("components", {})
+    comps["securitySchemes"] = {
+        "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    }
+    openapi_schema["security"] = [{"APIKeyHeader": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
 # CORS（按需放开）
 app.add_middleware(
     CORSMiddleware,
@@ -173,18 +195,7 @@ async def health() -> Dict[str, Any]:
 #   /v1/hs/{code}/imports
 # ---------------------------------------------------------------------
 
-app.include_router(meta.router,  prefix="/v1")
-app.include_router(ports.router, prefix="/v1")
-app.include_router(hs.router,    prefix="/v1")
 
-from app.routers import ports, trade, meta   # 你现有的
-from app.routers import ports_extra          # ← 新增
-
-# ...
-app.include_router(meta.router)
-app.include_router(ports.router)
-app.include_router(trade.router)
-app.include_router(ports_extra.router)       # ← 新增
 
 
 
