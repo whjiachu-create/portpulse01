@@ -47,3 +47,10 @@ jobs:
           curl -fsSL -H "X-API-Key: dev_key_123" \
             https://portpulse01-production.up.railway.app/v1/ports/USLAX/snapshot \
             | head -c 200 || true
+      - name: Create issue on failure
+        if: ${{ failure() }}
+        uses: dacbd/create-issue-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "ETL failed - ${{ github.run_id }}"
+          body: "Check run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
