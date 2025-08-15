@@ -7,26 +7,16 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import asyncpg
-from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.utils import get_openapi
 from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.openapi.utils import get_openapi
+from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
 
-# 子路由
-from app.routers import meta, ports, hs, ports_extra
-
-
-# ----------------------------- helpers -----------------------------
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def _normalize_dsn(raw: str) -> str:
-    """
-    让 Supabase/SaaS 的 DATABASE_URL 更适配 asyncpg:
-    - 没有 sslmode 时默认加上 require
-    - 没有 connect_timeout 时默认加上 10
-    """
     if "?" in raw:
         base, qs = raw.split("?", 1)
     else:
@@ -36,15 +26,12 @@ def _normalize_dsn(raw: str) -> str:
     params.setdefault("connect_timeout", "10")
     return f"{base}?{urllib.parse.urlencode(params)}"
 
-
-# ------------------------------- app -------------------------------
 app = FastAPI(
     title="PortPulse & TradeMomentum API",
     version="1.1",
     openapi_url="/openapi.json",
 )
 
-# Swagger/OpenAPI: 全局声明 ApiKeyAuth，/docs 右上角显示 Authorize 按钮
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -54,16 +41,16 @@ def custom_openapi():
         description="Operational port metrics and trade flows",
         routes=app.routes,
     )
-    schema.setdefault("components", {}).setdefault("securitySchemes", {}).update({
-        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
-    })
-    schema["security"] = [{"ApiKeyAuth": []}]
+    comps = schema.setdefault("components", {})
+    comps["securitySchemes"] = {
+        "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    }
+    schema["security"] = [{"APIKeyHeader": []}]
     app.openapi_schema = schema
     return schema
 
 app.openapi = custom_openapi
 
-# CORS（按需放开）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,12 +58,9 @@ app.add_middleware(
     allow_methods=["*"],
 )
 
-# DB DSN
 RAW_DSN = os.getenv("DATABASE_URL", "").strip()
 DB_DSN: Optional[str] = _normalize_dsn(RAW_DSN) if RAW_DSN else None
 
-
-# -------------------------- lifecycle hooks ------------------------
 @app.on_event("startup")
 async def startup() -> None:
     app.state.pool = None
@@ -85,11 +69,7 @@ async def startup() -> None:
         app.state.db_error = "DATABASE_URL is not set"
         return
     try:
-        app.state.pool = await asyncpg.create_pool(
-            dsn=DB_DSN,
-            min_size=1,
-            max_size=5,
-        )
+        app.state.pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=5)
     except Exception as e:  # noqa: BLE001
         app.state.db_error = f"{type(e).__name__}: {e}"
 
@@ -99,7 +79,6 @@ async def shutdown() -> None:
     if pool is not None:
         await pool.close()
 
-# 友好错误（表/列不存在、数据格式错误）
 @app.exception_handler(UndefinedTableError)
 async def handle_no_table(_, exc: UndefinedTableError):
     return JSONResponse(status_code=424, content={"error": "table_not_found", "detail": str(exc)})
@@ -112,8 +91,6 @@ async def handle_no_column(_, exc: UndefinedColumnError):
 async def handle_data_error(_, exc: DataError):
     return JSONResponse(status_code=400, content={"error": "bad_input", "detail": str(exc)})
 
-
-# ------------------------------- routes ----------------------------
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
     return RedirectResponse(url="/docs", status_code=307)
@@ -130,13 +107,14 @@ async def health() -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "ts": _now_iso(), "db": f"{type(e).__name__}: {e}"}
 
-# 业务路由（子路由自带 /meta /ports /hs 前缀；这里统一挂 /v1）
-app.include_router(meta.router,        prefix="/v1")
-app.include_router(ports.router,       prefix="/v1")
-app.include_router(hs.router,          prefix="/v1")
-app.include_router(ports_extra.router, prefix="/v1")  # 新增 overview / alerts / csv 输出
+# ---- 挂载业务路由（统一前缀 /v1）----
+from app.routers import meta, ports, hs, ports_extra  # noqa: E402
 
-# -- 本地调试 --
+app.include_router(meta.router,  prefix="/v1")
+app.include_router(ports.router, prefix="/v1")
+app.include_router(hs.router,    prefix="/v1")
+app.include_router(ports_extra.router, prefix="/v1")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)

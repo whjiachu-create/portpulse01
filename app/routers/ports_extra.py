@@ -13,7 +13,6 @@ from app.deps import get_conn
 router = APIRouter(prefix="/ports", tags=["ports+"])
 
 def _parse_window(win: str) -> int:
-    # 支持 "7d", "14d", "30d", 默认 14 天
     try:
         if win.endswith("d"):
             return max(1, int(win[:-1]))
@@ -27,7 +26,6 @@ async def port_overview(
     format: Literal["json", "csv"] = Query("json"),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
-    # 取最近一条 snapshot
     snap = await conn.fetchrow(
         """
         SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score, src, src_loaded_at
@@ -58,14 +56,13 @@ async def port_overview(
     if format == "json":
         return JSONResponse(content=res_json)
 
-    # CSV 导出：指标平铺
-    csv_lines = [
+    lines = [
         "metric,value,as_of,src,src_loaded_at",
         f'vessels,{snap["vessels"]},{snap["snapshot_ts"].isoformat()},{snap["src"]},{snap["src_loaded_at"].isoformat() if snap["src_loaded_at"] else ""}',
         f'avg_wait_hours,{float(snap["avg_wait_hours"])},{snap["snapshot_ts"].isoformat()},{snap["src"]},{snap["src_loaded_at"].isoformat() if snap["src_loaded_at"] else ""}',
         f'congestion_score,{float(snap["congestion_score"])},{snap["snapshot_ts"].isoformat()},{snap["src"]},{snap["src_loaded_at"].isoformat() if snap["src_loaded_at"] else ""}',
     ]
-    return PlainTextResponse("\n".join(csv_lines), media_type="text/csv")
+    return PlainTextResponse("\n".join(lines), media_type="text/csv")
 
 
 @router.get("/{unlocode}/alerts")
@@ -78,7 +75,6 @@ async def port_alerts(
     days = _parse_window(window)
     start_day = date.today() - timedelta(days=days - 1)
 
-    # 近 N 天 dwell
     dwell = await conn.fetch(
         """
         SELECT date, dwell_hours, src
@@ -98,7 +94,7 @@ async def port_alerts(
     change_pct = (last - base) / base * 100 if base else 0.0
 
     alerts = []
-    if abs(change_pct) >= 10:  # 简单阈值：±10%
+    if abs(change_pct) >= 10:
         alerts.append(
             {
                 "unlocode": unlocode,
@@ -115,7 +111,6 @@ async def port_alerts(
     if format == "json":
         return {"unlocode": unlocode, "window_days": days, "alerts": alerts}
 
-    # CSV 导出
     lines = ["unlocode,type,window_days,latest,baseline,pct_change,as_of,src"]
     if alerts:
         a = alerts[0]
