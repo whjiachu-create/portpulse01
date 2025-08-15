@@ -1,15 +1,18 @@
-cat > .github/workflows/etl.yml <<'YAML'
 name: PortPulse ETL
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   schedule:
-    # 每天 02:40 UTC 跑一次（北京时间 10:40）
+    # 每天 02:40 UTC（北京时间 10:40）
     - cron: "40 2 * * *"
+
+permissions:
+  contents: read
 
 jobs:
   etl:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       PYTHONUNBUFFERED: "1"
@@ -23,21 +26,24 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # —— 使用仓库里已经存在的脚本 —— #
-      - name: Run LAX dwell ETL
-        run: python etl/etl_port_lax.py
+      # 端口侧 ETL（你仓库现有脚本）
+      - name: Run Port ETL
+        run: python -u etl/etl_port_lax.py
 
-      - name: Run UN Comtrade HS imports ETL (4202)
-        run: python etl/etl_uncomtrade.py
+      # 贸易侧 ETL（你仓库现有脚本）
+      - name: Run Trade ETL
+        run: python -u etl/etl_uncomtrade.py
 
-      # 如已新增 NYC 的脚本，再解开下面两行：
-      # - name: Run NYC dwell ETL
-      #   run: python etl/etl_port_nyc.py
-YAML
+      # 简单健康/数据冒烟
+      - name: Smoke test API
+        run: |
+          curl -fsSL https://portpulse01-production.up.railway.app/v1/health
+          curl -fsSL -H "X-API-Key: dev_key_123" \
+            https://portpulse01-production.up.railway.app/v1/ports/USLAX/snapshot \
+            | head -c 200 || true
