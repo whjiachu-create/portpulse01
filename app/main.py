@@ -4,28 +4,28 @@ from __future__ import annotations
 import os
 import urllib.parse
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import asyncpg
+from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.openapi.utils import get_openapi
-from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
+from fastapi.responses import RedirectResponse, JSONResponse
 
-# 业务子路由
+# 子路由
 from app.routers import meta, ports, hs, ports_extra
 
 
-# ----------------------------- Helpers ---------------------------------
+# ----------------------------- helpers -----------------------------
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-
 def _normalize_dsn(raw: str) -> str:
     """
-    让 DATABASE_URL 适配 asyncpg；默认加上 sslmode=require 与 connect_timeout=10
-    （假设你使用 Supabase pooler）
+    让 Supabase/SaaS 的 DATABASE_URL 更适配 asyncpg:
+    - 没有 sslmode 时默认加上 require
+    - 没有 connect_timeout 时默认加上 10
     """
     if "?" in raw:
         base, qs = raw.split("?", 1)
@@ -37,16 +37,15 @@ def _normalize_dsn(raw: str) -> str:
     return f"{base}?{urllib.parse.urlencode(params)}"
 
 
-# ----------------------------- App -------------------------------------
+# ------------------------------- app -------------------------------
 app = FastAPI(
     title="PortPulse & TradeMomentum API",
     version="1.1",
     openapi_url="/openapi.json",
 )
 
-
+# Swagger/OpenAPI: 全局声明 ApiKeyAuth，/docs 右上角显示 Authorize 按钮
 def custom_openapi():
-    """在 Swagger 上启用全局 API Key（X-API-Key）鉴权按钮"""
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
@@ -55,18 +54,16 @@ def custom_openapi():
         description="Operational port metrics and trade flows",
         routes=app.routes,
     )
-    comps = schema.setdefault("components", {})
-    comps.setdefault("securitySchemes", {}).update(
-        {"ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}
-    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {}).update({
+        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    })
     schema["security"] = [{"ApiKeyAuth": []}]
     app.openapi_schema = schema
     return schema
 
-
 app.openapi = custom_openapi
 
-# CORS
+# CORS（按需放开）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,7 +76,7 @@ RAW_DSN = os.getenv("DATABASE_URL", "").strip()
 DB_DSN: Optional[str] = _normalize_dsn(RAW_DSN) if RAW_DSN else None
 
 
-# ------------------------ Startup / Shutdown ---------------------------
+# -------------------------- lifecycle hooks ------------------------
 @app.on_event("startup")
 async def startup() -> None:
     app.state.pool = None
@@ -88,11 +85,13 @@ async def startup() -> None:
         app.state.db_error = "DATABASE_URL is not set"
         return
     try:
-        app.state.pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=5)
+        app.state.pool = await asyncpg.create_pool(
+            dsn=DB_DSN,
+            min_size=1,
+            max_size=5,
+        )
     except Exception as e:  # noqa: BLE001
-        # 不中断启动，/v1/health 会带出错误原因
         app.state.db_error = f"{type(e).__name__}: {e}"
-
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
@@ -100,32 +99,27 @@ async def shutdown() -> None:
     if pool is not None:
         await pool.close()
 
-
-# --------------------------- Error handlers ----------------------------
+# 友好错误（表/列不存在、数据格式错误）
 @app.exception_handler(UndefinedTableError)
 async def handle_no_table(_, exc: UndefinedTableError):
     return JSONResponse(status_code=424, content={"error": "table_not_found", "detail": str(exc)})
 
-
 @app.exception_handler(UndefinedColumnError)
 async def handle_no_column(_, exc: UndefinedColumnError):
     return JSONResponse(status_code=424, content={"error": "column_not_found", "detail": str(exc)})
-
 
 @app.exception_handler(DataError)
 async def handle_data_error(_, exc: DataError):
     return JSONResponse(status_code=400, content={"error": "bad_input", "detail": str(exc)})
 
 
-# ------------------------------ Routes ---------------------------------
+# ------------------------------- routes ----------------------------
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
-    # Railway 默认对 / 做健康检查；307 也会被视作可达
     return RedirectResponse(url="/docs", status_code=307)
 
-
 @app.get("/v1/health")
-async def health() -> Dict[str, Any]:
+async def health() -> dict[str, Any]:
     pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
     if not pool:
         return {"ok": False, "ts": _now_iso(), "db": getattr(app.state, "db_error", "not-initialized")}
@@ -136,21 +130,13 @@ async def health() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "ts": _now_iso(), "db": f"{type(e).__name__}: {e}"}
 
+# 业务路由（子路由自带 /meta /ports /hs 前缀；这里统一挂 /v1）
+app.include_router(meta.router,        prefix="/v1")
+app.include_router(ports.router,       prefix="/v1")
+app.include_router(hs.router,          prefix="/v1")
+app.include_router(ports_extra.router, prefix="/v1")  # 新增 overview / alerts / csv 输出
 
-# 业务路由挂载：最终路径：
-# /v1/meta/sources
-# /v1/ports/{unlocode}/snapshot
-# /v1/ports/{unlocode}/dwell
-# /v1/hs/{code}/imports
-# /v1/ports/{unlocode}/overview
-# /v1/ports/{unlocode}/alerts
-app.include_router(meta.router,  prefix="/v1")
-app.include_router(ports.router, prefix="/v1")
-app.include_router(hs.router,    prefix="/v1")
-app.include_router(ports_extra.router, prefix="/v1")
-
-
-# --------------------------- Local debug --------------------------------
+# -- 本地调试 --
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)

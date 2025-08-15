@@ -1,18 +1,18 @@
 # app/deps.py
-import os
-from fastapi import Security, HTTPException, status
-from fastapi.security.api_key import APIKeyHeader
+from __future__ import annotations
 
-# 让 FastAPI 知道这是一个“安全方案”，Swagger 才会出现 Authorize
-api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+from typing import AsyncGenerator
+import asyncpg
+from fastapi import Request, HTTPException
 
-# 读环境变量（Railway/本地都可），默认 dev_key_123
-API_KEY = os.getenv("API_KEYS") or os.getenv("API_KEY") or "dev_key_123"
-
-def require_api_key(api_key: str = Security(api_key_scheme)) -> str:
-    if not api_key or api_key != API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key",
-        )
-    return api_key
+async def get_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
+    """
+    从 app.state.pool 里借一个连接，路由里用:
+        async for conn in get_conn(request): ...
+    或者 FastAPI 依赖注入: Depends(get_conn)
+    """
+    pool: asyncpg.Pool | None = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise HTTPException(status_code=503, detail="Database pool is not ready")
+    async with pool.acquire() as conn:
+        yield conn
