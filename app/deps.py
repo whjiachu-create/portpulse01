@@ -1,16 +1,18 @@
-from typing import AsyncIterator
-from fastapi import Request, HTTPException
-from asyncpg.connection import Connection
-from asyncpg.pool import Pool
+# app/deps.py
+import os
+from fastapi import Security, HTTPException, status
+from fastapi.security.api_key import APIKeyHeader
 
-async def get_conn(request: Request) -> AsyncIterator[Connection]:
-    """
-    从 app.state.pool 获取一个 asyncpg 连接，供路由使用。
-    如果连接池未就绪，直接返回 503。
-    """
-    pool: Pool | None = getattr(request.app.state, "pool", None)  # type: ignore
-    if pool is None:
-        err = getattr(request.app.state, "db_error", "DB pool not initialized")  # type: ignore
-        raise HTTPException(status_code=503, detail=str(err))
-    async with pool.acquire() as conn:
-        yield conn
+# 让 FastAPI 知道这是一个“安全方案”，Swagger 才会出现 Authorize
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# 读环境变量（Railway/本地都可），默认 dev_key_123
+API_KEY = os.getenv("API_KEYS") or os.getenv("API_KEY") or "dev_key_123"
+
+def require_api_key(api_key: str = Security(api_key_scheme)) -> str:
+    if not api_key or api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+    return api_key

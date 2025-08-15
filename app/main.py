@@ -1,4 +1,5 @@
 # app/main.py
+from app.routers import ports_extra
 from __future__ import annotations
 
 import os
@@ -55,6 +56,27 @@ app = FastAPI(
     version="1.1",
     openapi_url="/openapi.json",
 )
+# —— 统一在 OpenAPI 里声明全局 ApiKeyAuth（保证 /docs 右上角出现 Authorize）——
+from fastapi.openapi.utils import get_openapi
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=getattr(app, "title", "PortPulse API"),
+        version=getattr(app, "version", "1.0.0"),
+        description="PortPulse & TradeMomentum API",
+        routes=app.routes,
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {}).update({
+        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    })
+    # 设为全局安全要求（所有路由默认需要 X-API-Key；你也可以仅在业务路由用 Depends 控制）
+    schema["security"] = [{"ApiKeyAuth": []}]
+    app.openapi_schema = schema
+    return schema
+
+app.openapi = custom_openapi
 
 # CORS（按需放开）
 app.add_middleware(
@@ -163,6 +185,7 @@ app.include_router(meta.router)
 app.include_router(ports.router)
 app.include_router(trade.router)
 app.include_router(ports_extra.router)       # ← 新增
+
 
 
 # 若需本地调试：`uvicorn app.main:app --reload --port 8000`
