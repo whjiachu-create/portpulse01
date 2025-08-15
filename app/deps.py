@@ -7,9 +7,7 @@ from fastapi import Request, HTTPException
 
 async def get_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """
-    从 app.state.pool 里借一个连接，路由里用:
-        async for conn in get_conn(request): ...
-    或者 FastAPI 依赖注入: Depends(get_conn)
+    从 app.state.pool 借一个 asyncpg 连接。路由里用 Depends(get_conn) 注入。
     """
     pool: asyncpg.Pool | None = getattr(request.app.state, "pool", None)
     if pool is None:
