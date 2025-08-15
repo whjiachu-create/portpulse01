@@ -155,6 +155,15 @@ app.include_router(meta.router,  prefix="/v1")
 app.include_router(ports.router, prefix="/v1")
 app.include_router(hs.router,    prefix="/v1")
 
+from app.routers import ports, trade, meta   # 你现有的
+from app.routers import ports_extra          # ← 新增
+
+# ...
+app.include_router(meta.router)
+app.include_router(ports.router)
+app.include_router(trade.router)
+app.include_router(ports_extra.router)       # ← 新增
+
 
 # 若需本地调试：`uvicorn app.main:app --reload --port 8000`
 if __name__ == "__main__":
