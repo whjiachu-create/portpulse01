@@ -1,37 +1,43 @@
+cat > .github/workflows/etl.yml <<'YAML'
 name: PortPulse ETL
 
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 3 * * *"   # 每天 03:00 UTC 自动跑（北京时区=UTC+8，对应每天 11:00）
-  workflow_dispatch:       # 允许在 Actions 页手动一键运行
+    # 每天 02:40 UTC 跑一次（北京时间 10:40）
+    - cron: "40 2 * * *"
 
 jobs:
-  run-etl:
+  etl:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONUNBUFFERED: "1"
+      TZ: "UTC"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install asyncpg httpx python-dateutil
+          pip install -r requirements.txt
 
-      - name: Make daily port snapshots
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python etl/etl_snapshot.py
+      # —— 使用仓库里已经存在的脚本 —— #
+      - name: Run LAX dwell ETL
+        run: python etl/etl_port_lax.py
 
-      - name: Fetch HS4202 from UN Comtrade (optional)
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          COMTRADE_API_KEY: ${{ secrets.COMTRADE_API_KEY }}
-        run: |
-          python etl/etl_uncomtrade.py || echo "skip if no key"
+      - name: Run UN Comtrade HS imports ETL (4202)
+        run: python etl/etl_uncomtrade.py
+
+      # 如已新增 NYC 的脚本，再解开下面两行：
+      # - name: Run NYC dwell ETL
+      #   run: python etl/etl_port_nyc.py
+YAML
