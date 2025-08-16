@@ -1,6 +1,7 @@
 # app/routers/ports_extra.py
 from __future__ import annotations
-
+from fastapi import APIRouter, HTTPException, Depends   # ← 加上 Depends
+from app.deps import get_conn, require_api_key          # ← 新增这一行 
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,8 +19,9 @@ router = APIRouter()
 @router.get("/{unlocode}/overview")
 async def port_overview(
     unlocode: str,
-    format: Literal["json", "csv"] = Query("json"),
-    conn: asyncpg.Connection = Depends(get_conn),
+    format: str = "json",
+    conn = Depends(get_conn),
+    auth = Depends(require_api_key),
 ):
     """
     取该港口**最新一次**快照（vessels / avg_wait_hours / congestion_score）
@@ -76,8 +78,9 @@ async def port_overview(
 @router.get("/{unlocode}/alerts")
 async def port_alerts(
     unlocode: str,
-    window: str = Query("14d", description="窗口，如 7d/14d/30d"),
-    conn: asyncpg.Connection = Depends(get_conn),
+    window: str = "14d",
+    conn = Depends(get_conn),
+    auth = Depends(require_api_key),
 ):
     """
     简化版告警（示例：dwell 变化）

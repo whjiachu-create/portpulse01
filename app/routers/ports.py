@@ -1,13 +1,17 @@
+from app.deps import get_conn
 from fastapi import APIRouter, Depends, Path, Query
 from asyncpg.connection import Connection
 from app.deps import get_conn
 
+from fastapi import APIRouter, HTTPException, Depends   # ← 加上 Depends
+from app.deps import get_conn, require_api_key          # ← 新增这一行
 router = APIRouter(prefix="/ports", tags=["ports"])
 
 @router.get("/{unlocode}/snapshot")
 async def port_snapshot(
-    unlocode: str = Path(..., min_length=3, max_length=5, description="UN/LOCODE, e.g. USLAX"),
-    conn: Connection = Depends(get_conn),
+    unlocode: str,
+    conn = Depends(get_conn),
+    auth = Depends(require_api_key),
 ):
     """
     返回该港口最近一条快照（port_snapshots）。
@@ -40,9 +44,9 @@ async def port_snapshot(
 
 @router.get("/{unlocode}/dwell")
 async def port_dwell(
-    unlocode: str = Path(..., min_length=3, max_length=5),
-    days: int = Query(30, ge=1, le=120, description="返回最近 N 天，默认 30"),
-    conn: Connection = Depends(get_conn),
+    unlocode: str,
+    conn = Depends(get_conn),
+    auth = Depends(require_api_key),
 ):
     """
     返回最近 N 天的停时序列（port_dwell）。
