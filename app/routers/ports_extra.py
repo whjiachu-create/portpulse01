@@ -1,34 +1,31 @@
 # app/routers/ports_extra.py
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Depends   # ← 加上 Depends
-from app.deps import get_conn, require_api_key          # ← 新增这一行 
-from typing import Literal, Optional
 
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 import asyncpg
+import datetime as dt
 
-from app.deps import get_conn  # 复用全局连接池（app/main.py 在 startup 里创建）
+from app.deps import get_conn, require_api_key
 
-router = APIRouter()
+# 关键：挂在 /ports，最终路径是 /v1/ports/...
+router = APIRouter(prefix="/ports", tags=["ports"])
 
 
-# -----------------------------
-# Port Overview （已上线的单行总览，保留）
-# -----------------------------
+# ---------------------------------------------------------------------
+# /v1/ports/{unlocode}/overview
+#   - JSON: 单条最新快照（含 as_of、metrics、source）
+#   - CSV : header + 单行（用于客户下载/粘贴）
+# ---------------------------------------------------------------------
 @router.get("/{unlocode}/overview")
 async def port_overview(
     unlocode: str,
-    format: str = "json",
-    conn = Depends(get_conn),
-    auth = Depends(require_api_key),
+    format: Literal["json", "csv"] = Query("json"),
+    conn: asyncpg.Connection = Depends(get_conn),
+    auth=Depends(require_api_key),
 ):
-    """
-    取该港口**最新一次**快照（vessels / avg_wait_hours / congestion_score）
-    - JSON：结构化返回（含 as_of 与 source）
-    - CSV：单行（header: unlocode,as_of,vessels,avg_wait_hours,congestion_score）
-    """
-    snap = await conn.fetchrow(
+    row = await conn.fetchrow(
         """
         SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score, src
         FROM port_snapshots
@@ -38,60 +35,52 @@ async def port_overview(
         """,
         unlocode,
     )
-    if not snap:
+    if not row:
         raise HTTPException(status_code=404, detail="No snapshot for this port")
 
+    as_of = row["snapshot_ts"].isoformat()
+    vessels = int(row["vessels"])
+    wait_h = float(row["avg_wait_hours"])
+    cong = float(row["congestion_score"])
+    src = row["src"]
+
     if format == "csv":
-        # 单行导出
-        row = ",".join(
-            [
-                "unlocode,as_of,vessels,avg_wait_hours,congestion_score",
-                f"{unlocode},{snap['snapshot_ts'].isoformat()},{int(snap['vessels'])},{float(snap['avg_wait_hours'])},{float(snap['congestion_score'])}",
-            ]
-        )
-        # Content-Disposition 由网关/浏览器决定是否下载；这里不强制 attachment
+        header = "unlocode,as_of,vessels,avg_wait_hours,congestion_score"
+        line = f"{unlocode},{as_of},{vessels},{wait_h},{cong}"
+        # 提示下载（浏览器会弹保存）
+        fname = f"overview_{unlocode}_{as_of[:10]}.csv"
         return PlainTextResponse(
-            row.split("\n")[1] + "\n",  # 只返回数据行（header 由 smoke 校验拼过，这里走轻量）
+            header + "\n" + line + "\n",
             media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
-    # 默认 JSON
     return {
         "unlocode": unlocode,
-        "as_of": snap["snapshot_ts"].isoformat(),
+        "as_of": as_of,
         "metrics": {
-            "vessels": int(snap["vessels"]),
-            "avg_wait_hours": float(snap["avg_wait_hours"]),
-            "congestion_score": float(snap["congestion_score"]),
+            "vessels": vessels,
+            "avg_wait_hours": wait_h,
+            "congestion_score": cong,
         },
         "source": {
-            "src": snap["src"],
-            # 没有独立载入时间列时，用 snapshot_ts 表示“载入/观测时间”
-            "src_loaded_at": snap["snapshot_ts"].isoformat(),
+            "src": src,
+            "src_loaded_at": as_of,  # 当前表无独立“载入时间”，用 snapshot_ts 代表
         },
     }
 
 
-# -----------------------------
-# Port Alerts （已上线的告警，保留）
-# -----------------------------
+# ---------------------------------------------------------------------
+# /v1/ports/{unlocode}/alerts
+#   - 简化版告警：近 N 天的 dwell 变化（latest vs 前半窗口均值）
+# ---------------------------------------------------------------------
 @router.get("/{unlocode}/alerts")
 async def port_alerts(
     unlocode: str,
-    window: str = "14d",
-    conn = Depends(get_conn),
-    auth = Depends(require_api_key),
+    window: str = Query("14d", description="例如 7d / 14d / 30d"),
+    conn: asyncpg.Connection = Depends(get_conn),
+    auth=Depends(require_api_key),
 ):
-    """
-    简化版告警（示例：dwell 变化）
-    返回:
-    {
-      "unlocode": "...",
-      "window_days": 14,
-      "alerts": [ { type, latest, baseline, change, ... }, ... ]
-    }
-    """
-    # 解析窗口
     if not window.endswith("d"):
         raise HTTPException(status_code=400, detail="window must end with 'd'")
     try:
@@ -116,7 +105,6 @@ async def port_alerts(
     alerts = []
     if recs:
         latest = float(recs[-1]["dwell_hours"])
-        # baseline：窗口前半段均值（极简基线）
         half = max(1, len(recs) // 2)
         baseline = sum(float(r["dwell_hours"]) for r in recs[:half]) / half
         change = latest - baseline
@@ -128,28 +116,25 @@ async def port_alerts(
                 "latest": round(latest, 2),
                 "baseline": round(baseline, 2),
                 "change": round(change, 2),
-                "note": "Δ = latest - baseline (前半窗口均值)",
+                "note": "Δ = latest - baseline（窗口前半段均值）",
             }
         )
 
     return {"unlocode": unlocode, "window_days": days, "alerts": alerts}
 
 
-# -----------------------------
-# NEW: Port Trend （多天导出 / JSON+CSV）
-# -----------------------------
+# ---------------------------------------------------------------------
+# /v1/ports/{unlocode}/trend
+#   - 多天趋势：按天取“当日最新快照”  (JSON/CSV)
+# ---------------------------------------------------------------------
 @router.get("/{unlocode}/trend")
 async def port_trend(
     unlocode: str,
     days: int = Query(180, ge=7, le=365, description="返回最近 N 天"),
     format: Literal["json", "csv"] = Query("json"),
     conn: asyncpg.Connection = Depends(get_conn),
+    auth=Depends(require_api_key),
 ):
-    """
-    以“日”为粒度，抽取每天**最新**一条快照（vessels / avg_wait_hours / congestion_score）
-    - JSON：points[ {date, vessels, avg_wait_hours, congestion_score, src} ... ]
-    - CSV：header: date,vessels,avg_wait_hours,congestion_score,src
-    """
     rows = await conn.fetch(
         """
         WITH s AS (
@@ -176,15 +161,19 @@ async def port_trend(
     )
 
     if format == "csv":
-        # 头 + 多行
-        buf = ["date,vessels,avg_wait_hours,congestion_score,src"]
+        header = "date,vessels,avg_wait_hours,congestion_score,src"
+        lines = [header]
         for r in rows:
-            buf.append(
+            lines.append(
                 f"{r['date']},{int(r['vessels'])},{float(r['avg_wait_hours'])},{float(r['congestion_score'])},{r['src']}"
             )
-        return PlainTextResponse("\n".join(buf) + "\n", media_type="text/csv; charset=utf-8")
+        fname = f"trend_{unlocode}_{dt.date.today().isoformat()}.csv"
+        return PlainTextResponse(
+            "\n".join(lines) + "\n",
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
 
-    # JSON
     points = [
         {
             "date": r["date"].isoformat(),
