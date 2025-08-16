@@ -5,6 +5,8 @@ set -euo pipefail
 : "${BASE_URL:?BASE_URL is required}"
 : "${API_KEY:?API_KEY is required}"
 
+PYTHON=${PYTHON:-python3}
+
 PORT_OVERVIEW="${PORT_OVERVIEW:-USLAX}"
 PORT_ALERTS="${PORT_ALERTS:-USNYC}"
 ALERT_WINDOW="${ALERT_WINDOW:-14d}"
@@ -33,7 +35,7 @@ ok "health ok"
 
 # 2) sources
 echo "2) /v1/meta/sources"
-curl -s -H "X-API-Key: ${API_KEY}" "${BASE_URL}/v1/meta/sources" | python3 - <<'PY' || fail "sources JSON invalid"
+curl -s -H "X-API-Key: ${API_KEY}" "${BASE_URL}/v1/meta/sources" | "$PYTHON" - <<'PY' || fail "sources JSON invalid"
 import sys, json
 d=json.load(sys.stdin)
 assert isinstance(d, list) and len(d)>=1
@@ -43,7 +45,7 @@ ok "sources ok"
 # 3) overview json
 echo "3) /v1/ports/${PORT_OVERVIEW}/overview (JSON)"
 OV_JSON="$(curl -s -H "X-API-Key: ${API_KEY}" "${BASE_URL}/v1/ports/${PORT_OVERVIEW}/overview")"
-echo "${OV_JSON}" | python3 - <<PY || fail "overview JSON assertion failed,"
+echo "${OV_JSON}" | "$PYTHON" - <<PY || fail "overview JSON assertion failed,"
 import sys, json, datetime
 d=json.load(sys.stdin)
 as_of=d["as_of"]
@@ -60,7 +62,7 @@ ok "overview json ok"
 # 4) overview csv
 echo "4) /v1/ports/${PORT_OVERVIEW}/overview?format=csv"
 OV_CSV="$(curl -s -H "X-API-Key: ${API_KEY}" "${BASE_URL}/v1/ports/${PORT_OVERVIEW}/overview?format=csv")"
-echo "${OV_CSV}" | python3 - <<'PY' || fail "csv header invalid"
+echo "${OV_CSV}" | "$PYTHON" - <<'PY' || fail "csv header invalid"
 import sys
 s=sys.stdin.read().strip()
 # 只有数据行（本接口不返回 header），校验列数=5
@@ -72,7 +74,7 @@ ok "overview csv ok"
 # 5) trend json
 echo "5) /v1/ports/${PORT_OVERVIEW}/trend?days=14 (JSON)"
 TR_JSON="$(curl -s -H "X-API-Key: ${API_KEY}" "${BASE_URL}/v1/ports/${PORT_OVERVIEW}/trend?days=14")"
-echo "${TR_JSON}" | python3 - <<'PY' || fail "trend JSON invalid"
+echo "${TR_JSON}" | "$PYTHON" - <<'PY' || fail "trend JSON invalid"
 import sys, json
 d=json.load(sys.stdin)
 pts=d.get("points", [])
