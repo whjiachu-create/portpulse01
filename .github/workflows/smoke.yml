@@ -1,0 +1,22 @@
+name: PortPulse Smoke
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "40 2 * * *"  # 每天 10:40 北京时间
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run smoke tests
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          API_KEY:  ${{ secrets.API_KEY }}
+        run: bash scripts/smoke.sh
