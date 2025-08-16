@@ -26,6 +26,10 @@ async def port_overview(
     format: Literal["json", "csv"] = Query("json"),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
+    """
+    最新概览：vessels / avg_wait_hours / congestion_score
+    支持 ?format=json|csv  （CSV 表头严格匹配 smoke.sh）
+    """
     snap = await conn.fetchrow(
         """
         SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score, src, src_loaded_at
@@ -39,11 +43,12 @@ async def port_overview(
     if not snap:
         raise HTTPException(status_code=404, detail=f"No snapshot for {unlocode}")
 
+    as_of = snap["snapshot_ts"].isoformat()
     res_json = {
         "unlocode": unlocode,
-        "as_of": snap["snapshot_ts"].isoformat(),
+        "as_of": as_of,
         "metrics": {
-            "vessels": snap["vessels"],
+            "vessels": int(snap["vessels"]),
             "avg_wait_hours": float(snap["avg_wait_hours"]),
             "congestion_score": float(snap["congestion_score"]),
         },
@@ -53,17 +58,29 @@ async def port_overview(
         },
     }
 
-    if format == "json":
-        return JSONResponse(content=res_json)
+    # ---- CSV 分支：与 smoke.sh 期望完全一致 ----
+    if (format or "").lower() == "csv":
+        import io, csv
+        buf = io.StringIO(newline="")          # 保证只用 LF 换行
+        writer = csv.writer(buf, lineterminator="\n")
+        # 表头必须严格一致（不要空格/大小写不同/引号）
+        writer.writerow(["unlocode", "as_of", "vessels", "avg_wait_hours", "congestion_score"])
+        writer.writerow([
+            unlocode.upper(),
+            as_of,
+            int(snap["vessels"]),
+            float(snap["avg_wait_hours"]),
+            float(snap["congestion_score"]),
+        ])
+        csv_body = buf.getvalue()
+        return PlainTextResponse(
+            csv_body,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{unlocode}_overview.csv"'},
+        )
 
-    lines = [
-        "metric,value,as_of,src,src_loaded_at",
-        f'vessels,{snap["vessels"]},{snap["snapshot_ts"].isoformat()},{snap["src"]},{snap["src_loaded_at"].isoformat() if snap["src_loaded_at"] else ""}',
-        f'avg_wait_hours,{float(snap["avg_wait_hours"])},{snap["snapshot_ts"].isoformat()},{snap["src"]},{snap["src_loaded_at"].isoformat() if snap["src_loaded_at"] else ""}',
-        f'congestion_score,{float(snap["congestion_score"])},{snap["snapshot_ts"].isoformat()},{snap["src"]},{snap["src_loaded_at"].isoformat() if snap["src_loaded_at"] else ""}',
-    ]
-    return PlainTextResponse("\n".join(lines), media_type="text/csv")
-
+    # 默认 JSON
+    return res_json
 
 @router.get("/{unlocode}/alerts")
 async def port_alerts(
