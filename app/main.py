@@ -1,6 +1,13 @@
 # app/main.py
 from __future__ import annotations
 
+from __future__ import annotations
+
+from fastapi import FastAPI, Depends  # ← 加 Depends
+# ...
+from app.routers import meta, ports, hs, ports_extra
+from app.deps import require_api_key  # ← 新增
+
 import os
 import urllib.parse
 from datetime import datetime, timezone
@@ -109,6 +116,13 @@ async def health() -> dict[str, Any]:
 
 # ---- 挂载业务路由（统一前缀 /v1）----
 from app.routers import meta, ports, hs, ports_extra  # noqa: E402
+
+protected = [Depends(require_api_key)]
+
+app.include_router(meta.router,        prefix="/v1", dependencies=protected)
+app.include_router(ports.router,       prefix="/v1", dependencies=protected)
+app.include_router(hs.router,          prefix="/v1", dependencies=protected)
+app.include_router(ports_extra.router, prefix="/v1", dependencies=protected)
 
 app.include_router(meta.router,  prefix="/v1")
 app.include_router(ports.router, prefix="/v1")
