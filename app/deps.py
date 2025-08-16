@@ -1,39 +1,38 @@
 # app/deps.py
 from __future__ import annotations
-
-import os
 from typing import AsyncGenerator
-
+from fastapi import HTTPException, Request, Depends
 import asyncpg
-from fastapi import Header, HTTPException, Request, status
+import os
 
+API_KEY = os.getenv("API_KEY", "dev_key_123")  # 你已有的话沿用
 
-# ---------- 1) API Key 依赖 ----------
-# 允许多个 Key：优先读 API_KEYS（逗号分隔），退化到 API_KEY，最后默认 dev_key_123
-_allowed = os.getenv("API_KEYS") or os.getenv("API_KEY") or "dev_key_123"
-ALLOWED_KEYS = {k.strip() for k in _allowed.split(",") if k.strip()}
+def require_api_key(x_api_key: str | None = None):
+    # 允许从 Header: X-API-Key 或 query ?api_key= 读取
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Missing or invalid API key")
+    return True
 
-async def require_api_key(x_api_key: str | None = Header(None)) -> None:
-    """缺少或错误的 Key 时直接 401"""
-    if not x_api_key or x_api_key not in ALLOWED_KEYS:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid API key",
-        )
-
-
-# ---------- 2) 数据库连接依赖 ----------
-# 不从 app.main 导入 pool（会循环引用）；而是通过 Request 取 app.state.pool
 async def get_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
-    pool: asyncpg.pool.Pool | None = getattr(request.app.state, "pool", None)
-    if pool is None:
+    """
+    只对「获取连接」过程做保护；业务路由里的异常（如 404）不要在这里吞掉。
+    """
+    pool: asyncpg.Pool | None = getattr(request.app.state, "pool", None)
+    if not pool:
         raise HTTPException(status_code=503, detail="DB pool not ready")
 
     try:
-        async with pool.acquire() as conn:
-            yield conn
+        conn = await pool.acquire()
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"DB acquire failed: {type(e).__name__}: {e}",
-        ) from e
+        # 仅在「获取连接」失败时返回 500
+        raise HTTPException(status_code=500, detail=f"DB acquire failed: {type(e).__name__}: {e}")
+
+    try:
+        yield conn
+    finally:
+        try:
+            await pool.release(conn)
+        except Exception:
+            pass
