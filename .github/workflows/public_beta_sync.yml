@@ -1,0 +1,26 @@
+name: Public Beta Sync
+
+on:
+  schedule:
+    - cron: "0 9 * * 5"   # 每周五 09:00 UTC
+  workflow_dispatch:      # 手动触发
+  push:
+    paths:
+      - "PUBLIC_BETA.md"  # 文档变更时自动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub CLI 在 runner 上已预装；把 GITHUB_TOKEN 映射为 GH_TOKEN 供 gh 使用
+      - name: Setup GH_TOKEN
+        run: echo "GH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Run sync
+        run: |
+          python3 scripts/sync_public_beta.py
