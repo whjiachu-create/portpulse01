@@ -1,24 +1,21 @@
 # app/main.py
 from __future__ import annotations
 
-from __future__ import annotations
-
-from fastapi import FastAPI, Depends  # ← 加 Depends
-# ...
-from app.routers import meta, ports, hs, ports_extra
-from app.deps import require_api_key  # ← 新增
-
-import os
-import urllib.parse
+import os, urllib.parse
 from datetime import datetime, timezone
-from typing import Any, Optional
-
+from typing import Any, Optional, Dict
 import asyncpg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse
 from fastapi.openapi.utils import get_openapi
-from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
+
+from app.deps import get_conn, require_api_key
+from app.middlewares import RequestIdMiddleware, JsonErrorEnvelopeMiddleware, AccessLogMiddleware
+
+# 子路由
+from app.routers import meta, ports, hs
+from app.routers import ports_extra
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -33,101 +30,79 @@ def _normalize_dsn(raw: str) -> str:
     params.setdefault("connect_timeout", "10")
     return f"{base}?{urllib.parse.urlencode(params)}"
 
-app = FastAPI(
-    title="PortPulse & TradeMomentum API",
-    version="1.1",
-    openapi_url="/openapi.json",
-)
+RAW_DSN = os.getenv("DATABASE_URL", "").strip()
+DB_DSN: Optional[str] = _normalize_dsn(RAW_DSN) if RAW_DSN else None
 
+app = FastAPI(title="PortPulse API", version="1.2", openapi_url="/openapi.json")
+
+# OpenAPI：全局 API Key 方案，确保 /docs 右上角有 Authorize
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
-        title=app.title,
-        version=app.version,
+        title="PortPulse API",
+        version="1.2",
         description="Operational port metrics and trade flows",
         routes=app.routes,
     )
     comps = schema.setdefault("components", {})
-    comps["securitySchemes"] = {
-        "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    comps.setdefault("securitySchemes", {})["APIKeyHeader"] = {
+        "type": "apiKey", "in": "header", "name": "X-API-Key"
     }
     schema["security"] = [{"APIKeyHeader": []}]
     app.openapi_schema = schema
     return schema
-
 app.openapi = custom_openapi
 
+# 中间件
+app.add_middleware(RequestIdMiddleware)
+app.add_middleware(JsonErrorEnvelopeMiddleware)
+app.add_middleware(AccessLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_headers=["*"],
-    allow_methods=["*"],
+    allow_origins=["*"], allow_headers=["*"], allow_methods=["*"],
 )
 
-RAW_DSN = os.getenv("DATABASE_URL", "").strip()
-DB_DSN: Optional[str] = _normalize_dsn(RAW_DSN) if RAW_DSN else None
-
+# 启动/关闭：连接池
 @app.on_event("startup")
-async def startup() -> None:
+async def startup():
     app.state.pool = None
     app.state.db_error = None
     if not DB_DSN:
-        app.state.db_error = "DATABASE_URL is not set"
+        app.state.db_error = "DATABASE_URL not set"
         return
     try:
         app.state.pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=5)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         app.state.db_error = f"{type(e).__name__}: {e}"
 
 @app.on_event("shutdown")
-async def shutdown() -> None:
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
-    if pool is not None:
-        await pool.close()
+async def shutdown():
+    pool = getattr(app.state, "pool", None)
+    if pool: await pool.close()
 
-@app.exception_handler(UndefinedTableError)
-async def handle_no_table(_, exc: UndefinedTableError):
-    return JSONResponse(status_code=424, content={"error": "table_not_found", "detail": str(exc)})
-
-@app.exception_handler(UndefinedColumnError)
-async def handle_no_column(_, exc: UndefinedColumnError):
-    return JSONResponse(status_code=424, content={"error": "column_not_found", "detail": str(exc)})
-
-@app.exception_handler(DataError)
-async def handle_data_error(_, exc: DataError):
-    return JSONResponse(status_code=400, content={"error": "bad_input", "detail": str(exc)})
-
+# 根路径 → /docs
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
     return RedirectResponse(url="/docs", status_code=307)
 
-@app.get("/v1/health")
-async def health() -> dict[str, Any]:
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
-    if not pool:
+# 健康检查（含 DB）
+@app.get("/v1/health", tags=["meta"])
+async def health() -> Dict[str, Any]:
+    if not getattr(app.state, "pool", None):
         return {"ok": False, "ts": _now_iso(), "db": getattr(app.state, "db_error", "not-initialized")}
     try:
-        async with pool.acquire() as conn:
+        async with app.state.pool.acquire() as conn:
             await conn.fetchval("SELECT 1;")
         return {"ok": True, "ts": _now_iso()}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"ok": False, "ts": _now_iso(), "db": f"{type(e).__name__}: {e}"}
 
-# ---- 挂载业务路由（统一前缀 /v1）----
-from app.routers import meta, ports, hs, ports_extra  # noqa: E402
-
-protected = [Depends(require_api_key)]
-
-app.include_router(meta.router,        prefix="/v1", dependencies=protected)
-app.include_router(ports.router,       prefix="/v1", dependencies=protected)
-app.include_router(hs.router,          prefix="/v1", dependencies=protected)
-app.include_router(ports_extra.router, prefix="/v1", dependencies=protected)
-
-app.include_router(meta.router,  prefix="/v1")
-app.include_router(ports.router, prefix="/v1")
-app.include_router(hs.router,    prefix="/v1")
-app.include_router(ports_extra.router, prefix="/v1")
+# 业务路由统挂 /v1
+app.include_router(meta.router, prefix="/v1", tags=["meta"])
+app.include_router(ports.router, prefix="/v1", tags=["ports"])
+app.include_router(hs.router,    prefix="/v1", tags=["trade"])
+app.include_router(ports_extra.router, prefix="/v1/ports", tags=["ports"])
 
 if __name__ == "__main__":
     import uvicorn
