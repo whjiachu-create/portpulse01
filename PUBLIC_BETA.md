@@ -162,3 +162,116 @@
 | CS/Onboarding | Support/CS | Product |
 
 > 文件版本：`PUBLIC_BETA.md`，作为**唯一真相来源**（SSOT）。任何优先级/范围调整请先改此文档并在 PR 中审阅。
+
+---
+
+## 执行纲领（Public Beta 对齐｜API + 轻量洞察 Demo）
+
+**定位**：以 “API + 轻量洞察（Demo）” 为对外收费最小闭环，标准按 **Public Beta** 执行。  
+**目标**：访客能在 1 分钟内看到 Demo，3 分钟拿到 Key，15 分钟跑通 API；可以在线付款，系统稳定、可回滚、可观测。
+
+### 一、阶段优先级（不与总蓝图冲突，只是落地顺序收敛）
+1. **官网首页 + Demo（高优先）**  
+   - 根域（useportpulse.com）直达首页，首屏价值 + 动态 Demo（缓存样例数据）+ 明确 CTA（Get API Key / Try API）。  
+   - 保留 `/docs` 文档站（Redoc/Docusaurus），但首页优先级高于文档。
+2. **计费闭环（Stripe + Stripe Tax + Webhook）**  
+   - 访客可直接支付 → 自动发 API Key（邮件）→ 立即调用。  
+   - 记录用量（先粗粒度），发票自动化。
+3. **开发者体验（DX）**  
+   - Quickstart（cURL/Python/JS Tabs）、Postman 集合、OpenAPI 下载、一键示例 CSV。  
+   - 轻量 SDK（py/js）：内置签名、重试、限速退避。
+4. **端点与数据**  
+   - `/trend` 增强：`fields=`、`tz=`、分页。  
+   - `/alerts` 升级：分位阈值 + 变点检测，返回 `why`/`severity`。  
+   - 数据新鲜度 SLO（如 p95 < 2h）、异常/缺失处理、去重与口径字典。
+5. **稳定性与可观测**  
+   - 外部探针（UptimeRobot/Better Stack）、结构化日志（JSON）、Sentry/Logfire、每日备份、灰度回滚。
+6. **安全与合规**  
+   - API Key 前缀（`pp_test_…` / `pp_live_…`）、最小权限、WAF 基线。  
+   - **Stripe Webhook 验证**、密钥轮换 SOP、DPA/隐私策略。
+7. **客户成功与支持**  
+   - `support@useportpulse.com`、/welcome 引导、15 分钟跑通清单、状态订阅。  
+   - 事件埋点：`view_demo` / `copy_snippet` / `checkout_success` / `first_200_ok` / `first_csv_download`。
+8. **公司治理与触发器**  
+   - 设立新加坡主体的触发器不变：MRR ≥ $3k 或 付费客户 ≥ 10。
+
+### 二、映射关系（对照《上线前还需完善的工作》九大版块）
+| 蓝图章节 | 本阶段动作（收敛） | 验收口径（DoD） |
+|---|---|---|
+| 核心产品 & 数据 | `/trend`（fields/tz/分页）、`/alerts`（分位阈值+变点）、数据新鲜度 SLO | 任一港口 30 天可回放零空洞；`/v1/*` p95 < 300ms |
+| 平台 & 可观测 | 外部探针、结构化日志、Sentry/Logfire、备份/回滚 | 告警触发后 10 分钟内可定位问题 |
+| 安全 & 合规 | API Key 前缀、WAF、最小权限、Stripe Webhook 验证、密钥轮换 SOP | 未授权 401/403；暴力尝试被限速 |
+| 开发者体验 & 文档 | Docs + Postman + Quickstart + 轻量 SDK（py/js） | 新用户 15 分钟内可跑通并导出 CSV |
+| 官网 & 市场化 | 首页 = 价值 + Demo + CTA；SEO/Analytics；线索表单 | 根域直达首页；转化链路顺畅 |
+| 计费 & 税务 | Stripe + Tax + Webhook（自动发 Key）+ 粗粒度用量 | 自助订阅→开票→邮件送达 |
+| 客户成功 & 支持 | 支持邮箱、Onboarding、SLA、2 个试点案例 | 新客 24h 内跑通；有 NPS 收集 |
+| 公司与治理 | 触发器：MRR≥$3k 或 客户≥10 → 新加坡主体 | 模板齐备（合规/合同/财税） |
+| 指标 & 发布就绪 | 可用率/延迟/错误率/新鲜度/转化；回滚演练 | 压测/备份验证/法务页齐全 |
+
+### 三、对齐声明
+- 本节为**落地顺序与优先级收敛**，**不替代也不冲突**原蓝图；原九大版块仍是全量边界。  
+- 当月执行以本节为准；月度复盘时更新本节并在 Changelog 记录变更。
+
+### 四、上线“硬门槛”清单（Public Beta）
+- 官网首页 + Demo 可用；  
+- Stripe 收款 + 自动发 Key 可用；  
+- `/v1/ports/{code}/overview?format=csv` 可下载；  
+- 外部探针全部绿；  
+- 回滚演练与备份验证完成；  
+- 文档 Quickstart 与 Postman 集合可 15 分钟跑通。
+
+## 执行纲领（Public Beta 对齐｜API + 轻量洞察 Demo）
+
+**定位**：以 “API + 轻量洞察（Demo）” 为对外收费最小闭环，标准按 **Public Beta** 执行。  
+**目标**：访客能在 1 分钟内看到 Demo，3 分钟拿到 Key，15 分钟跑通 API；可以在线付款，系统稳定、可回滚、可观测。
+
+### 一、阶段优先级（不与总蓝图冲突，只是落地顺序收敛）
+1. **官网首页 + Demo（高优先）**  
+   - 根域（useportpulse.com）直达首页，首屏价值 + 动态 Demo（缓存样例数据）+ 明确 CTA（Get API Key / Try API）。  
+   - 保留 `/docs` 文档站（Redoc/Docusaurus），但首页优先级高于文档。
+2. **计费闭环（Stripe + Stripe Tax + Webhook）**  
+   - 访客可直接支付 → 自动发 API Key（邮件）→ 立即调用。  
+   - 记录用量（先粗粒度），发票自动化。
+3. **开发者体验（DX）**  
+   - Quickstart（cURL/Python/JS Tabs）、Postman 集合、OpenAPI 下载、一键示例 CSV。  
+   - 轻量 SDK（py/js）：内置签名、重试、限速退避。
+4. **端点与数据**  
+   - `/trend` 增强：`fields=`、`tz=`、分页。  
+   - `/alerts` 升级：分位阈值 + 变点检测，返回 `why`/`severity`。  
+   - 数据新鲜度 SLO（如 p95 < 2h）、异常/缺失处理、去重与口径字典。
+5. **稳定性与可观测**  
+   - 外部探针（UptimeRobot/Better Stack）、结构化日志（JSON）、Sentry/Logfire、每日备份、灰度回滚。
+6. **安全与合规**  
+   - API Key 前缀（`pp_test_…` / `pp_live_…`）、最小权限、WAF 基线。  
+   - **Stripe Webhook 验证**、密钥轮换 SOP、DPA/隐私策略。
+7. **客户成功与支持**  
+   - `support@useportpulse.com`、/welcome 引导、15 分钟跑通清单、状态订阅。  
+   - 事件埋点：`view_demo` / `copy_snippet` / `checkout_success` / `first_200_ok` / `first_csv_download`。
+8. **公司治理与触发器**  
+   - 设立新加坡主体的触发器不变：MRR ≥ $3k 或 付费客户 ≥ 10。
+
+### 二、映射关系（对照《上线前还需完善的工作》九大版块）
+| 蓝图章节 | 本阶段动作（收敛） | 验收口径（DoD） |
+|---|---|---|
+| 核心产品 & 数据 | `/trend`（fields/tz/分页）、`/alerts`（分位阈值+变点）、数据新鲜度 SLO | 任一港口 30 天可回放零空洞；`/v1/*` p95 < 300ms |
+| 平台 & 可观测 | 外部探针、结构化日志、Sentry/Logfire、备份/回滚 | 告警触发后 10 分钟内可定位问题 |
+| 安全 & 合规 | API Key 前缀、WAF、最小权限、Stripe Webhook 验证、密钥轮换 SOP | 未授权 401/403；暴力尝试被限速 |
+| 开发者体验 & 文档 | Docs + Postman + Quickstart + 轻量 SDK（py/js） | 新用户 15 分钟内可跑通并导出 CSV |
+| 官网 & 市场化 | 首页 = 价值 + Demo + CTA；SEO/Analytics；线索表单 | 根域直达首页；转化链路顺畅 |
+| 计费 & 税务 | Stripe + Tax + Webhook（自动发 Key）+ 粗粒度用量 | 自助订阅→开票→邮件送达 |
+| 客户成功 & 支持 | 支持邮箱、Onboarding、SLA、2 个试点案例 | 新客 24h 内跑通；有 NPS 收集 |
+| 公司与治理 | 触发器：MRR≥$3k 或 客户≥10 → 新加坡主体 | 模板齐备（合规/合同/财税） |
+| 指标 & 发布就绪 | 可用率/延迟/错误率/新鲜度/转化；回滚演练 | 压测/备份验证/法务页齐全 |
+
+### 三、对齐声明
+- 本节为**落地顺序与优先级收敛**，**不替代也不冲突**原蓝图；原九大版块仍是全量边界。  
+- 当月执行以本节为准；月度复盘时更新本节并在 Changelog 记录变更。
+
+### 四、上线“硬门槛”清单（Public Beta）
+- 官网首页 + Demo 可用；  
+- Stripe 收款 + 自动发 Key 可用；  
+- `/v1/ports/{code}/overview?format=csv` 可下载；  
+- 外部探针全部绿；  
+- 回滚演练与备份验证完成；  
+- 文档 Quickstart 与 Postman 集合可 15 分钟跑通。
+
