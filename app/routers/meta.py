@@ -1,31 +1,41 @@
-from app.deps import get_conn
-from fastapi import APIRouter, Depends
-from fastapi import APIRouter, HTTPException, Depends   # ← 加上 Depends
-from app.deps import get_conn, require_api_key          # ← 新增这一行
-from asyncpg.connection import Connection
-from app.deps import get_conn
+# app/routers/meta.py
+from __future__ import annotations
 
-router = APIRouter(prefix="/meta", tags=["meta"])
+from typing import List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException
+import asyncpg
+
+from app.deps import get_conn, require_api_key  # 复用连接 & API Key 依赖
+
+router = APIRouter(tags=["meta"])
 
 @router.get("/sources")
-async def meta_sources(
-    conn = Depends(get_conn),
-    auth = Depends(require_api_key),
-):
+async def list_sources(
+    conn: asyncpg.Connection = Depends(get_conn),
+    auth: None = Depends(require_api_key),
+) -> List[Dict[str, Any]]:
     """
-    读取 meta_sources 列表（id, name, url, last_updated）。
+    返回数据来源清单：
+    [
+      { "id": 1, "name": "...", "url": "...", "last_updated": "ISO8601" },
+      ...
+    ]
     """
-    rows = await conn.fetch("""
+    rows = await conn.fetch(
+        """
         SELECT id, name, url, last_updated
-        FROM meta_sources
-        ORDER BY name ASC;
-    """)
-    return [
-        {
-            "id": r["id"],
+        FROM sources
+        ORDER BY id ASC
+        """
+    )
+    # 容错：列可能允许 NULL，统一转 ISO 字符串
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        lu = r["last_updated"]
+        out.append({
+            "id": int(r["id"]),
             "name": r["name"],
             "url": r["url"],
-            "last_updated": r["last_updated"].isoformat() if r["last_updated"] else None,
-        }
-        for r in rows
-    ]
+            "last_updated": lu.isoformat() if lu is not None else None,
+        })
+    return out
