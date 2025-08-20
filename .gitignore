@@ -6,3 +6,9 @@ __pycache__/
 __pycache__/
 logs/
 *.pyc
+
+# local noise
+.DS_Store
+logs/*.log
+scripts/smoke.sh.save
+portpulse-site/
