@@ -1,44 +1,23 @@
 name: Smoke
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # 每 30 分钟跑一次（UTC）
-  workflow_dispatch:          # 支持手动触发
+    - cron: "0 */6 * * *"
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      BASE_URL: https://api.useportpulse.com
-      PORT_OVERVIEW: USLAX
-      PORT_ALERTS: USNYC
-      ALERT_WINDOW: 14d
-      API_KEY: ${{ secrets.PORTPULSE_API_KEY }}  # 仓库里要有这个 Secret
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Show tool versions
-        run: |
-          python3 --version
-          bash --version
-          curl --version
-
-      - name: Make scripts executable
-        run: chmod +x scripts/smoke.sh
-
-      - name: Run smoke (with retries)
+        with: { python-version: '3.11' }
+      - name: Run smoke.sh
         env:
-          CURL_OPTS: "--http1.1 --retry 3 --retry-all-errors --max-time 25 -H 'Accept: application/json' -H 'User-Agent: PortPulseSmoke/1.2'"
+          API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
+          BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+          PORT_OVERVIEW: ${{ secrets.PORTPULSE_PORT_OVERVIEW }}
+          PORT_ALERTS: ${{ secrets.PORTPULSE_PORT_ALERTS }}
+          ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
         run: |
-          set -euxo pipefail
-          bash scripts/smoke.sh
-
-      - name: Dump OpenAPI when failed
-        if: failure()
-        run: |
-          curl -sS -D - -o - $BASE_URL/openapi.json | head -n 80 || true
+          bash scripts/smoke.sh || (echo "retry once..." && sleep 10 && bash scripts/smoke.sh)

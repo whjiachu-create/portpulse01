@@ -12,3 +12,9 @@ logs/
 logs/*.log
 scripts/smoke.sh.save
 portpulse-site/
+
+# local noise
+.DS_Store
+logs/*.log
+scripts/smoke.sh.save
+portpulse-site/
