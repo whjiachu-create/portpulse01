@@ -34,28 +34,32 @@ d=json.loads(b)
 assert d.get("ok") is True, f"health not ok: {d}"
 print("✅ health ok")'
 
-# 2) sources
-# 2) sources（动态选择路径：/v1/meta/sources 优先，其次 /v1/sources）
+# 2) sources（不依赖 openapi；顺序探测两条可能路径）
 echo "2) sources"
-SOURCES_PATH=$(
-  curl -sS --http1.1 -H 'Cache-Control: no-cache' "${BASE_URL}/openapi.json" \
-  | python3 -c 'import sys,json
-d=json.load(sys.stdin); paths=set(d.get("paths",{}).keys())
-print("/v1/meta/sources" if "/v1/meta/sources" in paths else ("/v1/sources" if "/v1/sources" in paths else ""))'
-)
 
-if [ -z "${SOURCES_PATH}" ]; then
-  echo "❌ no sources path in openapi"; exit 1
+try_sources() {
+  local path="$1"
+  local body
+  body="$(curl_json "${BASE_URL}${path}")" || true
+  [ -n "$body" ] || return 1
+  echo "$body" | python3 - "$path" <<'PY'
+import sys, json, os
+d = json.load(sys.stdin)
+# 成功条件：返回必须是 list（[ {...}, ... ]）
+if isinstance(d, list):
+    print(f"✅ sources ok ({sys.argv[1]}):", len(d))
+else:
+    raise SystemExit(1)
+PY
+}
+
+if ! try_sources "/v1/meta/sources"; then
+  if ! try_sources "/v1/sources"; then
+    echo "❌ sources not found on /v1/meta/sources or /v1/sources"
+    echo "   hint: check router mount & include_in_schema"
+    exit 1
+  fi
 fi
-
-RESP="$(curl_json "${BASE_URL}${SOURCES_PATH}")" || true
-RESP="${RESP:-}"
-RESP="$RESP" python3 -c 'import os,json,sys
-b=os.environ["RESP"].strip()
-assert b, "empty body from sources"
-d=json.loads(b)
-assert isinstance(d, list), f"sources invalid: {d}"
-print(f"✅ sources ok: {len(d)}")'
 
 # 3) overview (force json to避开CSV边界)
 echo "3) /v1/ports/${PORT_OVERVIEW}/overview?format=json"
