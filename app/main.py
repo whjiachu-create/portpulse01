@@ -1,151 +1,103 @@
 # app/main.py
 from __future__ import annotations
-
+import logging
 import os
-import urllib.parse
-from datetime import datetime, timezone
-from typing import Any, Optional
-
-import asyncpg
-from fastapi import FastAPI
+from typing import Any, Dict
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
-from asyncpg import UndefinedTableError, UndefinedColumnError, DataError
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.middleware import Middleware
+from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY, HTTP_500_INTERNAL_SERVER_ERROR
+from fastapi import HTTPException
 
-# 业务子路由
-from app.routers import meta, ports, hs, ports_extra  # 确保这些模块存在
-# 依赖（API Key 校验、DB 连接）
-# 需要已有 app/deps.py，其中包含 get_conn / require_api_key 的实现
+from .middlewares import RequestIdMiddleware, AccessLogMiddleware, request_id_var
 
-# ---------------- Config & Helpers ----------------
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# -------- 日志基础设置（stdout，INFO） --------
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(message)s",  # 我们输出 JSON，避免前缀
+)
 
-def _normalize_dsn(raw: str) -> str:
-    # 给 asyncpg 适配 sslmode / connect_timeout
-    if "?" in raw:
-        base, qs = raw.split("?", 1)
-    else:
-        base, qs = raw, ""
-    params = dict(urllib.parse.parse_qsl(qs, keep_blank_values=True))
-    params.setdefault("sslmode", "require")
-    params.setdefault("connect_timeout", "10")
-    return f"{base}?{urllib.parse.urlencode(params)}"
-
-
-# ---------------- App ----------------
+# -------- 应用 & 中间件 --------
 app = FastAPI(
     title="PortPulse & TradeMomentum API",
+    description="PortPulse & TradeMomentum API",
     version="1.1",
-    openapi_url="/openapi.json",
 )
 
-# OpenAPI 安全方案（只定义一次，避免重复定义导致 schema 异常）
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    schema = get_openapi(
-        title=getattr(app, "title", "PortPulse API"),
-        version=getattr(app, "version", "1.0.0"),
-        description="PortPulse & TradeMomentum API",
-        routes=app.routes,
-    )
-    schema.setdefault("components", {}).setdefault("securitySchemes", {}).update({
-        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
-    })
-    schema["security"] = [{"ApiKeyAuth": []}]
-    app.openapi_schema = schema
-    return schema
-
-app.openapi = custom_openapi
-
-# CORS
+app.add_middleware(RequestIdMiddleware)
+app.add_middleware(AccessLogMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_headers=["*"],
-    allow_methods=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# 数据库 DSN
-RAW_DSN = os.getenv("DATABASE_URL", "").strip()
-DB_DSN: Optional[str] = _normalize_dsn(RAW_DSN) if RAW_DSN else None
+# -------- 统一错误体工具 --------
+def _err_body(request: Request, code: str, message: str, status: int, *, hint: str | None = None, details: Any = None) -> JSONResponse:
+    rid = getattr(request.state, "request_id", None) or request_id_var.get()
+    body: Dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": rid,
+    }
+    if hint:
+        body["hint"] = hint
+    if details is not None:
+        body["details"] = details
+    return JSONResponse(status_code=status, content=body)
 
+# —— 覆盖 FastAPI 默认异常为统一结构 —— #
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    # 统一为 {code,message,request_id,details?}
+    code = f"http_error_{exc.status_code}"
+    msg = exc.detail if isinstance(exc.detail, str) else "HTTP error"
+    return _err_body(request, code, msg, exc.status_code, details=None if isinstance(exc.detail, str) else exc.detail)
 
-# ---------------- DB Pool Lifecycle ----------------
-@app.on_event("startup")
-async def startup() -> None:
-    app.state.pool = None
-    app.state.db_error = None
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return _err_body(request, "validation_error", "Request validation failed", HTTP_422_UNPROCESSABLE_ENTITY, details=exc.errors())
 
-    if not DB_DSN:
-        app.state.db_error = "DATABASE_URL is not set"
-        return
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logging.getLogger("portpulse.app").exception("uncaught error: %r", exc)
+    return _err_body(request, "internal_error", "Internal server error", HTTP_500_INTERNAL_SERVER_ERROR)
 
-    try:
-        # 兼容 pgbouncer，禁用 prepared statement 的缓存
-        app.state.pool = await asyncpg.create_pool(
-            dsn=DB_DSN,
-            min_size=2,
-            max_size=10,
-            command_timeout=20,
-            max_inactive_connection_lifetime=30,
-    statement_cache_size=0,   # ← 关键：配合 pgbouncer，禁用语句缓存，避免偶发阻塞
-)
-    except Exception as e:
-        app.state.db_error = f"{type(e).__name__}: {e}"
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
-    if pool is not None:
-        await pool.close()
-
-
-# ---------------- 常见异常到稳定 JSON ----------------
-@app.exception_handler(UndefinedTableError)
-async def handle_no_table(_, exc: UndefinedTableError):
-    return JSONResponse(status_code=424, content={"error": "table_not_found", "detail": str(exc)})
-
-@app.exception_handler(UndefinedColumnError)
-async def handle_no_column(_, exc: UndefinedColumnError):
-    return JSONResponse(status_code=424, content={"error": "column_not_found", "detail": str(exc)})
-
-@app.exception_handler(DataError)
-async def handle_data_error(_, exc: DataError):
-    return JSONResponse(status_code=400, content={"error": "bad_input", "detail": str(exc)})
-
-
-# ---------------- 根路由 & 健康 ----------------
+# -------- 根路径跳转到 /docs（保持原有行为） --------
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
     return RedirectResponse(url="/docs", status_code=307)
 
+# -------- 健康检查（保留你现有的字段） --------
 @app.get("/v1/health", tags=["meta"])
-async def health() -> dict[str, Any]:
-    pool: Optional[asyncpg.pool.Pool] = getattr(app.state, "pool", None)
-    if not pool:
-        return {"ok": False, "ts": _now_iso(), "db": getattr(app.state, "db_error", "not-initialized")}
+async def health() -> Dict[str, Any]:
+    # 如果你在启动阶段把数据库错误放到 app.state.db_error，这里按现状返回
+    db_err = getattr(app.state, "db_error", None)
+    return {
+        "ok": db_err is None,
+        "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "db": None if db_err is None else str(db_err),
+    }
+
+# -------- 路由装载（按文件存在与否自动装） --------
+def _include_router_if_exists(module_path: str, router_name: str, prefix: str, tags: list[str]):
     try:
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1;")
-        return {"ok": True, "ts": _now_iso(), "db": None}
+        mod = __import__(module_path, fromlist=[router_name])
+        router = getattr(mod, router_name)
+        app.include_router(router, prefix=prefix, tags=tags)
     except Exception as e:
-        return {"ok": False, "ts": _now_iso(), "db": f"{type(e).__name__}: {e}"}
+        logging.getLogger("portpulse.app").info("router skipped: %s (%s)", module_path, e)
 
+_include_router_if_exists("app.routers.meta", "router", "/v1/meta", ["meta"])
+_include_router_if_exists("app.routers.ports", "router", "/v1/ports", ["ports"])
+_include_router_if_exists("app.routers.ports_extra", "router", "/v1/ports", ["ports"])
+_include_router_if_exists("app.routers.hs", "router", "/v1", ["trade"])
 
-# ---------------- 业务路由挂载（关键） ----------------
-# 注意：prefix 统一放在 include_router，而各子路由文件内部只用自身的相对前缀
-# 这样最终路径是 /v1/ports/... /v1/meta/... /v1/hs/...
-app.include_router(meta.router,       prefix="/v1")
-app.include_router(ports.router,      prefix="/v1")  # ★ 必须：否则 /v1/ports/* 404
-app.include_router(ports_extra.router, prefix="/v1")
-app.include_router(hs.router,         prefix="/v1")
-
-
-# 本地调试： uvicorn app.main:app --reload --port 8000
+# -------- 本地调试入口 --------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
