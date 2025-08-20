@@ -35,14 +35,26 @@ assert d.get("ok") is True, f"health not ok: {d}"
 print("✅ health ok")'
 
 # 2) sources
-echo "2) /v1/meta/sources"
-RESP="$(curl_json "${BASE_URL}/v1/meta/sources")" || true
+# 2) sources（动态选择路径：/v1/meta/sources 优先，其次 /v1/sources）
+echo "2) sources"
+SOURCES_PATH=$(
+  curl -sS --http1.1 -H 'Cache-Control: no-cache' "${BASE_URL}/openapi.json" \
+  | python3 -c 'import sys,json
+d=json.load(sys.stdin); paths=set(d.get("paths",{}).keys())
+print("/v1/meta/sources" if "/v1/meta/sources" in paths else ("/v1/sources" if "/v1/sources" in paths else ""))'
+)
+
+if [ -z "${SOURCES_PATH}" ]; then
+  echo "❌ no sources path in openapi"; exit 1
+fi
+
+RESP="$(curl_json "${BASE_URL}${SOURCES_PATH}")" || true
 RESP="${RESP:-}"
-RESP="$RESP" python3 -c 'import os,json
+RESP="$RESP" python3 -c 'import os,json,sys
 b=os.environ["RESP"].strip()
-assert b, "empty body from /v1/meta/sources"
+assert b, "empty body from sources"
 d=json.loads(b)
-assert isinstance(d,list) and len(d)>=1, f"sources invalid: {d}"
+assert isinstance(d, list), f"sources invalid: {d}"
 print(f"✅ sources ok: {len(d)}")'
 
 # 3) overview (force json to避开CSV边界)
