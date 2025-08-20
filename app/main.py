@@ -49,5 +49,5 @@ async def health():
 # 路由挂载（只在这里加前缀）
 app.include_router(ports.router,       prefix="/v1/ports", tags=["ports"])
 app.include_router(ports_extra.router, prefix="/v1/ports", tags=["ports"])
-app.include_router(hs.router,          prefix="/v1",       tags=["trade"])
+app.include_router(hs.router,          prefix="/v1/hs",       tags=["trade"])
 app.include_router(meta.router,        prefix="/v1/meta",  tags=["meta"])
