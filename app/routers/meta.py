@@ -1,41 +1,41 @@
 # app/routers/meta.py
 from __future__ import annotations
 
-from typing import List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, Query
 import asyncpg
 
-from app.deps import get_conn, require_api_key  # 复用连接 & API Key 依赖
+from app.deps import get_conn, require_api_key
 
-router = APIRouter(tags=["meta"])
+router = APIRouter(prefix="/meta", tags=["meta"])
 
 @router.get("/sources")
-async def list_sources(
+async def meta_sources(
+    request: Optional[str] = Query(
+        None,
+        description="Optional echo field from client; kept for backward-compat."
+    ),
     conn: asyncpg.Connection = Depends(get_conn),
-    auth: None = Depends(require_api_key),
-) -> List[Dict[str, Any]]:
+    _auth = Depends(require_api_key),
+):
     """
-    返回数据来源清单：
-    [
-      { "id": 1, "name": "...", "url": "...", "last_updated": "ISO8601" },
-      ...
-    ]
+    返回当前数据源列表及最近载入时间（从 port_snapshots 聚合）。
+    响应:
+    {
+      "sources": [ { "src": "prod", "src_loaded_at": "2025-08-18T..." }, ... ],
+      "echo": { "request": "...(可选回显)" }
+    }
     """
     rows = await conn.fetch(
         """
-        SELECT id, name, url, last_updated
-        FROM sources
-        ORDER BY id ASC
+        SELECT src, MAX(snapshot_ts) AS src_loaded_at
+        FROM port_snapshots
+        GROUP BY src
+        ORDER BY src
         """
     )
-    # 容错：列可能允许 NULL，统一转 ISO 字符串
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        lu = r["last_updated"]
-        out.append({
-            "id": int(r["id"]),
-            "name": r["name"],
-            "url": r["url"],
-            "last_updated": lu.isoformat() if lu is not None else None,
-        })
-    return out
+    sources = [
+        {"src": r["src"], "src_loaded_at": r["src_loaded_at"].isoformat()}
+        for r in rows
+    ]
+    return {"sources": sources, "echo": {"request": request}}

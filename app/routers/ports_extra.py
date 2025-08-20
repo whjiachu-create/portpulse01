@@ -1,25 +1,26 @@
 # app/routers/ports_extra.py
 from __future__ import annotations
-from typing import Literal, Optional, List
+
+from typing import Literal, Optional, List, Set
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 import asyncpg
 
 from app.deps import get_conn, require_api_key
 
-router = APIRouter()
+router = APIRouter(prefix="/ports", tags=["ports"])
 
 # -----------------------------
-# Port Overview（JSON + CSV）
+# Port Overview（最新单行）
 # -----------------------------
-@router.get("/{unlocode}/overview", tags=["ports"])
+@router.get("/{unlocode}/overview")
 async def port_overview(
     unlocode: str,
     format: Literal["json", "csv"] = Query("json"),
     conn: asyncpg.Connection = Depends(get_conn),
-    _auth: bool = Depends(require_api_key),
+    _auth = Depends(require_api_key),
 ):
-    row = await conn.fetchrow(
+    snap = await conn.fetchrow(
         """
         SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score, src
         FROM port_snapshots
@@ -29,112 +30,54 @@ async def port_overview(
         """,
         unlocode,
     )
-    if not row:
+    if not snap:
         raise HTTPException(status_code=404, detail="No snapshot for this port")
 
     if format == "csv":
-        header = "unlocode,as_of,vessels,avg_wait_hours,congestion_score,src"
-        data = f"{unlocode},{row['snapshot_ts'].isoformat()},{int(row['vessels'])},{float(row['avg_wait_hours'])},{float(row['congestion_score'])},{row['src']}"
-        resp = PlainTextResponse("\n".join([header, data]) + "\n", media_type="text/csv; charset=utf-8")
-        # 提示浏览器下载（不强制）
-        resp.headers["Content-Disposition"] = f'inline; filename="{unlocode}_overview.csv"'
-        return resp
+        header = "unlocode,as_of,vessels,avg_wait_hours,congestion_score"
+        line = (
+            f"{unlocode},{snap['snapshot_ts'].isoformat()},"
+            f"{int(snap['vessels'])},{float(snap['avg_wait_hours'])},"
+            f"{float(snap['congestion_score'])}"
+        )
+        return PlainTextResponse(
+            header + "\n" + line + "\n",
+            media_type="text/csv; charset=utf-8",
+        )
 
     return {
         "unlocode": unlocode,
-        "as_of": row["snapshot_ts"].isoformat(),
+        "as_of": snap["snapshot_ts"].isoformat(),
         "metrics": {
-            "vessels": int(row["vessels"]),
-            "avg_wait_hours": float(row["avg_wait_hours"]),
-            "congestion_score": float(row["congestion_score"]),
+            "vessels": int(snap["vessels"]),
+            "avg_wait_hours": float(snap["avg_wait_hours"]),
+            "congestion_score": float(snap["congestion_score"]),
         },
-        "source": {"src": row["src"], "src_loaded_at": row["snapshot_ts"].isoformat()},
+        "source": {
+            "src": snap["src"],
+            "src_loaded_at": snap["snapshot_ts"].isoformat(),
+        },
     }
 
 # -----------------------------
-# Port Trend：fields/tz/分页 + CSV
+# Port Alerts（极简示例）
 # -----------------------------
-_ALLOWED_FIELDS = ["vessels", "avg_wait_hours", "congestion_score", "src"]
-
-@router.get("/{unlocode}/trend", tags=["ports"])
-async def port_trend(
-    unlocode: str,
-    days: int = Query(180, ge=7, le=365),
-    fields: str = Query("vessels,avg_wait_hours,congestion_score,src"),
-    tz: str = Query("UTC", description="IANA 时区，如 America/Los_Angeles"),
-    page: int = Query(1, ge=1),
-    limit: int = Query(90, ge=10, le=365),
-    format: Literal["json", "csv"] = Query("json"),
-    conn: asyncpg.Connection = Depends(get_conn),
-    _auth: bool = Depends(require_api_key),
-):
-    # 解析字段
-    flds = [f.strip() for f in fields.split(",") if f.strip() in _ALLOWED_FIELDS]
-    if not flds:
-        raise HTTPException(status_code=400, detail="fields param invalid")
-
-    offset = (page - 1) * limit
-
-    rows = await conn.fetch(
-        f"""
-        WITH s AS (
-          SELECT
-            (snapshot_ts AT TIME ZONE $2) AS ts_local,
-            DATE_TRUNC('day', snapshot_ts AT TIME ZONE $2)::date AS d,
-            vessels, avg_wait_hours, congestion_score, src
-          FROM port_snapshots
-          WHERE unlocode = $1
-            AND snapshot_ts >= (CURRENT_DATE - $3::int)
-        ),
-        r AS (
-          SELECT *,
-                 ROW_NUMBER() OVER (PARTITION BY d ORDER BY ts_local DESC) AS rn
-          FROM s
-        )
-        SELECT d, {", ".join(flds)}
-        FROM r
-        WHERE rn = 1
-        ORDER BY d ASC
-        OFFSET $4 LIMIT $5
-        """,
-        unlocode, tz, days, offset, limit
-    )
-
-    if format == "csv":
-        header = ",".join(["date"] + flds)
-        lines = [header]
-        for r in rows:
-            vals = [r["d"].isoformat()]
-            for f in flds:
-                v = r[f]
-                if isinstance(v, (int, float)):
-                    vals.append(str(float(v)) if isinstance(v, float) else str(int(v)))
-                else:
-                    vals.append(str(v))
-            lines.append(",".join(vals))
-        resp = PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv; charset=utf-8")
-        resp.headers["Content-Disposition"] = f'inline; filename="{unlocode}_trend.csv"'
-        return resp
-
-    points = []
-    for r in rows:
-        item = {"date": r["d"].isoformat()}
-        for f in flds:
-            item[f] = r[f] if not isinstance(r[f], float) else float(r[f])
-        points.append(item)
-    return {"unlocode": unlocode, "days": days, "tz": tz, "page": page, "limit": limit, "fields": flds, "points": points}
-
-# -----------------------------
-# Alerts：分位阈值 + 变点解释
-# -----------------------------
-@router.get("/{unlocode}/alerts", tags=["ports"])
+@router.get("/{unlocode}/alerts")
 async def port_alerts(
     unlocode: str,
-    window: int = Query(14, ge=7, le=90),
-    pctl: float = Query(0.75, ge=0.5, le=0.95, description="阈值分位数，比如0.75"),
+    window: str = "14d",
     conn: asyncpg.Connection = Depends(get_conn),
-    _auth: bool = Depends(require_api_key),
+    _auth = Depends(require_api_key),
 ):
+    if not window.endswith("d"):
+        raise HTTPException(status_code=400, detail="window must end with 'd'")
+    try:
+        days = int(window[:-1])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid window")
+    if days <= 0 or days > 365:
+        raise HTTPException(status_code=400, detail="window out of range")
+
     recs = await conn.fetch(
         """
         SELECT date, dwell_hours
@@ -143,29 +86,108 @@ async def port_alerts(
           AND date >= CURRENT_DATE - $2::int
         ORDER BY date ASC
         """,
-        unlocode, window
+        unlocode, days,
     )
+
     alerts = []
     if recs:
-        ys = [float(r["dwell_hours"]) for r in recs]
-        latest = ys[-1]
-        base = sorted(ys)  # 分位
-        idx = int(max(0, min(len(base)-1, round((len(base)-1)*pctl))))
-        thresh = base[idx]
-        change = latest - (sum(ys[:-1]) / max(1, len(ys)-1))
-        severity = "low"
-        if abs(change) > 0.5 and abs(change)/max(0.1, thresh) > 0.15:
-            severity = "medium"
-        if abs(change) > 1.0 and abs(change)/max(0.1, thresh) > 0.3:
-            severity = "high"
+        latest = float(recs[-1]["dwell_hours"])
+        half = max(1, len(recs) // 2)
+        baseline = sum(float(r["dwell_hours"]) for r in recs[:half]) / half
+        change = latest - baseline
         alerts.append({
             "unlocode": unlocode,
             "type": "dwell_change",
-            "window_days": window,
+            "window_days": days,
             "latest": round(latest, 2),
-            "threshold": round(thresh, 2),
+            "baseline": round(baseline, 2),
             "change": round(change, 2),
-            "severity": severity,
-            "why": f"latest vs mean(window-1), threshold={int(pctl*100)}p",
+            "note": "Δ = latest - baseline (前半窗口均值)"
         })
-    return {"unlocode": unlocode, "window_days": window, "alerts": alerts}
+
+    return {"unlocode": unlocode, "window_days": days, "alerts": alerts}
+
+# -----------------------------
+# Port Trend（多天导出 / JSON+CSV）
+# 新增：fields(字段筛选)、tz(显示时区)、limit/offset(分页)
+# -----------------------------
+_ALLOWED_FIELDS: Set[str] = {"vessels", "avg_wait_hours", "congestion_score", "src"}
+
+@router.get("/{unlocode}/trend")
+async def port_trend(
+    unlocode: str,
+    days: int = Query(180, ge=7, le=365, description="返回最近 N 天"),
+    format: Literal["json", "csv"] = Query("json"),
+    fields: Optional[str] = Query(
+        None,
+        description="逗号分隔，例：vessels,avg_wait_hours；为空则返回全部"
+    ),
+    tz: str = Query("UTC", description="显示时区，仅影响按天分组的边界"),
+    limit: int = Query(365, ge=1, le=3650),
+    offset: int = Query(0, ge=0, le=100000),
+    conn: asyncpg.Connection = Depends(get_conn),
+    _auth = Depends(require_api_key),
+):
+    # 解析字段
+    if fields:
+        req = [f.strip() for f in fields.split(",") if f.strip()]
+        bad = [f for f in req if f not in _ALLOWED_FIELDS]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"unknown fields: {','.join(bad)}")
+        use_fields = req
+    else:
+        use_fields = ["vessels", "avg_wait_hours", "congestion_score", "src"]
+
+    # 提前拼装选择列（CSV/JSON复用）
+    select_cols = ", ".join(use_fields)
+
+    rows = await conn.fetch(
+        f"""
+        WITH s AS (
+          SELECT
+            DATE_TRUNC('day', snapshot_ts AT TIME ZONE $2) AS d,
+            snapshot_ts, vessels, avg_wait_hours, congestion_score, src
+          FROM port_snapshots
+          WHERE unlocode = $1
+            AND snapshot_ts >= (CURRENT_DATE - $3::int)
+        ),
+        r AS (
+          SELECT *,
+                 ROW_NUMBER() OVER (PARTITION BY d ORDER BY snapshot_ts DESC) AS rn
+          FROM s
+        )
+        SELECT d::date AS date, {select_cols}
+        FROM r
+        WHERE rn = 1
+        ORDER BY date ASC
+        OFFSET $4 LIMIT $5
+        """,
+        unlocode, tz, days, offset, limit,
+    )
+
+    if format == "csv":
+        header = ",".join(["date"] + use_fields)
+        buf = [header]
+        for r in rows:
+            parts: List[str] = [str(r["date"])]
+            for f in use_fields:
+                v = r[f]
+                parts.append(str(int(v)) if isinstance(v, int) else str(float(v)) if isinstance(v, float) else str(v))
+            buf.append(",".join(parts))
+        return PlainTextResponse("\n".join(buf) + "\n", media_type="text/csv; charset=utf-8")
+
+    # JSON
+    points = []
+    for r in rows:
+        item = {"date": r["date"].isoformat()}
+        for f in use_fields:
+            v = r[f]
+            if isinstance(v, int):
+                item[f] = int(v)
+            elif isinstance(v, float):
+                item[f] = float(v)
+            else:
+                item[f] = v
+        points.append(item)
+
+    return {"unlocode": unlocode, "days": days, "tz": tz, "limit": limit, "offset": offset, "fields": use_fields, "points": points}
