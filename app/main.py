@@ -72,7 +72,12 @@ async def startup():
         app.state.db_error = "DATABASE_URL not set"
         return
     try:
-        app.state.pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=5)
+        app.state.pool = await asyncpg.create_pool(
+            dsn=DB_DSN,
+    min_size=1, max_size=10,
+    statement_cache_size=0,                 # ← 关键：禁用语句缓存=不使用 prepared stmt
+    max_inactive_connection_lifetime=300,   # 建议：空闲连接回收，配合 pgBouncer 更稳
+)
     except Exception as e:
         app.state.db_error = f"{type(e).__name__}: {e}"
 
