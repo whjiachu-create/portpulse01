@@ -88,10 +88,12 @@ async def startup() -> None:
         # 兼容 pgbouncer，禁用 prepared statement 的缓存
         app.state.pool = await asyncpg.create_pool(
             dsn=DB_DSN,
-            min_size=1,
-            max_size=5,
-            statement_cache_size=0,
-        )
+            min_size=2,
+            max_size=10,
+            command_timeout=20,
+            max_inactive_connection_lifetime=30,
+    statement_cache_size=0,   # ← 关键：配合 pgbouncer，禁用语句缓存，避免偶发阻塞
+)
     except Exception as e:
         app.state.db_error = f"{type(e).__name__}: {e}"
 
