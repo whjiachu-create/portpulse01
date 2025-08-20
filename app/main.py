@@ -1,24 +1,40 @@
 # app/main.py
-from __future__ import annotations
-import logging, os
-from typing import Any, Dict
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
-
-from .middlewares import RequestIdASGIMiddleware, AccessLogASGIMiddleware, request_id_var
+from fastapi import FastAPI
 from app.routers import meta, ports, hs
-
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(message)s")
+from fastapi.openapi.utils import get_openapi
 
 app = FastAPI(
     title="PortPulse & TradeMomentum API",
-    description="PortPulse & TradeMomentum API",
     version="1.1",
+    description="PortPulse & TradeMomentum API",
+    openapi_url="/openapi.json",
 )
+
+# ... 你的中间件、/v1/health 等保持不变 ...
+
+# ---- 关键：挂载所有路由 ----
+app.include_router(meta.router,  prefix="/v1")        # <- 提供 /v1/sources
+app.include_router(ports.router, prefix="/v1/ports")
+app.include_router(hs.router,    prefix="/v1/hs")
+
+# OpenAPI：用实时 routes 生成（避免遗漏）
+def custom_openapi():
+    return get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+app.openapi = custom_openapi
+
+# 调试辅助：列出所有注册的路由（上线后可删除）
+@app.get("/__routes")
+def __routes():
+    items = []
+    for r in app.router.routes:
+        methods = list(getattr(r, "methods", []) or [])
+        items.append({"path": getattr(r, "path", None), "name": r.name, "methods": methods})
+    return items
 
 # << 替换为 ASGI 级中间件 >>
 app.add_middleware(RequestIdASGIMiddleware)
