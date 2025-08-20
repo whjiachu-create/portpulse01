@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from .middlewares import RequestIdASGIMiddleware, AccessLogASGIMiddleware, request_id_var
+from app.routers import meta, ports, hs
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(message)s")
 
@@ -80,7 +81,11 @@ _include_router_if_exists("app.routers.meta", "router", "/v1/meta", ["meta"])
 _include_router_if_exists("app.routers.ports", "router", "/v1/ports", ["ports"])
 _include_router_if_exists("app.routers.ports_extra", "router", "/v1/ports", ["ports"])
 _include_router_if_exists("app.routers.hs", "router", "/v1", ["trade"])
-
+# 其他 include_router 保持不变
+app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+app.include_router(hs.router,    prefix="/v1/hs",    tags=["trade"])
+# 统一这里：/v1 + meta 里的 /sources  => /v1/sources
+app.include_router(meta.router,  prefix="/v1",       tags=["meta"])  # ← 关键
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
