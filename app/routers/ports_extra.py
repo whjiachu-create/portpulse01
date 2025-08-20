@@ -8,7 +8,7 @@ import asyncpg
 
 from app.deps import get_conn, require_api_key
 
-router = APIRouter(prefix="/ports", tags=["ports"])
+router = APIRouter()
 
 # -----------------------------
 # Port Overview（最新单行）
@@ -62,7 +62,7 @@ async def port_overview(
 # -----------------------------
 # Port Alerts（极简示例）
 # -----------------------------
-@router.get("/{unlocode}/alerts")
+@router.get("/{unlocode}/alerts", summary="Port Alerts")
 async def port_alerts(
     unlocode: str,
     window: str = "14d",
