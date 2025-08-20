@@ -1,6 +1,6 @@
 # app/routers/ports_extra.py
 from __future__ import annotations
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -107,72 +107,73 @@ async def port_alerts(
 # -----------------------------
 # Port Trend（JSON+CSV）
 # -----------------------------
-@router.get("/{unlocode}/trend", summary="Port Trend")
+@router.get("/{unlocode}/trend")
 async def port_trend(
     unlocode: str,
-    days: int = Query(180, ge=7, le=365, description="返回最近 N 天"),
+    days: int = Query(30, ge=7, le=365, description="返回最近 N 天"),
     format: Literal["json", "csv"] = Query("json"),
-    fields: str | None = Query(None, description="逗号分隔，如 vessels,avg_wait_hours；为空返回全部"),
+    fields: Optional[str] = Query(None, description="逗号分隔，例：vessels,avg_wait_hours；为空=全部"),
     tz: str = Query("UTC", description="显示时区，仅影响按天分组边界"),
     limit: int = Query(365, ge=1, le=3650),
-    offset: int = Query(0, ge=0, le=100_000),
+    offset: int = Query(0, ge=0, le=100000),
     conn: asyncpg.Connection = Depends(get_conn),
-    _auth: Any = Depends(require_api_key),
+    auth = Depends(require_api_key),
 ):
+    """
+    以“日”为粒度，抽取每天**最新**一条快照（vessels / avg_wait_hours / congestion_score）
+    - 支持 fields、分页 limit/offset
+    - 默认 days=30，保证快速返回，避免触发 Cloudflare 524
+    """
+    want = {"vessels", "avg_wait_hours", "congestion_score"}
+    cols = ["vessels", "avg_wait_hours", "congestion_score"]
+    if fields:
+        fset = {f.strip() for f in fields.split(",") if f.strip()}
+        cols = [c for c in ["vessels", "avg_wait_hours", "congestion_score"] if c in fset] or cols
+        want = set(cols)
+
+    # 仅选必要列，减少传输
+    select_cols = ", ".join(["vessels", "avg_wait_hours", "congestion_score", "src"])
+
     rows = await conn.fetch(
         """
         WITH s AS (
-          SELECT
-            (snapshot_ts AT TIME ZONE 'utc') AT TIME ZONE $2 AS local_ts,
-            snapshot_ts, vessels, avg_wait_hours, congestion_score, src
+          SELECT DATE_TRUNC('day', snapshot_ts AT TIME ZONE $3) AS d,
+                 snapshot_ts, vessels, avg_wait_hours, congestion_score, src
           FROM port_snapshots
           WHERE unlocode = $1
-            AND snapshot_ts >= (CURRENT_DATE - $3::int)
+            AND snapshot_ts >= (CURRENT_DATE - $2::int)
         ),
         r AS (
-          SELECT DATE_TRUNC('day', local_ts) AS d, *
-          FROM s
-        ),
-        r2 AS (
           SELECT *,
                  ROW_NUMBER() OVER (PARTITION BY d ORDER BY snapshot_ts DESC) AS rn
-          FROM r
+          FROM s
         )
-        SELECT d::date AS date,
-               vessels, avg_wait_hours, congestion_score, src
-        FROM r2
+        SELECT (d AT TIME ZONE $3)::date AS date, {select_cols}
+        FROM r
         WHERE rn = 1
         ORDER BY date ASC
         LIMIT $4 OFFSET $5
-        """,
-        unlocode, tz, days, limit, offset,
+        """.format(select_cols=select_cols),
+        unlocode, days, tz, limit, offset,
     )
 
-    cols_all = ("vessels", "avg_wait_hours", "congestion_score", "src")
-    if fields:
-        keep = tuple(x.strip() for x in fields.split(",") if x.strip() in cols_all)
-        cols = keep or cols_all
-    else:
-        cols = cols_all
-
     if format == "csv":
-        header = ",".join(("date",) + cols)
-        buf = [header]
+        header = ["date"] + cols + ["src"]
+        buf = [",".join(header)]
         for r in rows:
-            line = [r["date"].isoformat()] + [str(r[c]) if c == "src" else str(float(r[c])) if c != "vessels" else str(int(r[c])) for c in cols]
-            buf.append(",".join(line))
+            vals = [r["date"].isoformat()]
+            for c in cols:
+                vals.append(str(float(r[c]) if c != "vessels" else int(r[c])))
+            vals.append(r["src"])
+            buf.append(",".join(vals))
         return PlainTextResponse("\n".join(buf) + "\n", media_type="text/csv; charset=utf-8")
 
-    # JSON
     points = []
     for r in rows:
-        item = {"date": r["date"].isoformat()}
-        for c in cols:
-            if c == "vessels":
-                item[c] = int(r[c])
-            elif c in ("avg_wait_hours", "congestion_score"):
-                item[c] = float(r[c])
-            else:
-                item[c] = r[c]
+        item = {"date": r["date"].isoformat(), "src": r["src"]}
+        if "vessels" in want: item["vessels"] = int(r["vessels"])
+        if "avg_wait_hours" in want: item["avg_wait_hours"] = float(r["avg_wait_hours"])
+        if "congestion_score" in want: item["congestion_score"] = float(r["congestion_score"])
         points.append(item)
+
     return {"unlocode": unlocode, "days": days, "points": points}
