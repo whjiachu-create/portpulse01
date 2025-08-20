@@ -9,13 +9,12 @@ from app.deps import get_conn, require_api_key
 
 router = APIRouter(prefix="/meta", tags=["meta"])
 
-
 @router.get("/sources")
 async def list_sources(
-    # 最近多少小时更新；0=不过滤（返回全部）
-    since_hours: int = Query(720, ge=0, le=24 * 365, description="hours since last_updated; 0 = no filter"),
+    # 最近多少小时内有更新；0 = 不过滤（返回全部）
+    since_hours: int = Query(720, ge=0, le=8760, description="hours since last_updated; 0 = no filter"),
     conn: asyncpg.Connection = Depends(get_conn),
-    _auth: None = Depends(require_api_key),  # 仅校验，不占用返回
+    _auth: None = Depends(require_api_key),  # 仅用于鉴权，不参与返回
 ) -> List[Dict]:
     if since_hours == 0:
         rows = await conn.fetch(
