@@ -1,34 +1,18 @@
-name: Smoke API
-
+name: Smoke
 on:
-  workflow_dispatch: {}
   schedule:
-    # 每天 03:10 UTC（北京 11:10）巡检一次
-    - cron: "10 3 * * *"
-
+    - cron: "*/30 * * * *"   # 每 30 分钟
+  workflow_dispatch:        # 手动触发
 jobs:
-  smoke:
+  run:
     runs-on: ubuntu-latest
-    env:
-      BASE_URL: https://portpulse01-production.up.railway.app
-      API_KEY: ${{ secrets.API_KEY }}          # 在 GitHub -> Settings -> Secrets and variables -> Actions 新增
-      PORT_OVERVIEW: USLAX
-      PORT_ALERTS: USNYC
-      ALERT_WINDOW: 14d
-      MAX_VESSELS: "400"
-      MAX_WAIT_HOURS: "12"
-      MAX_CONGESTION: "80"
-      FRESHNESS_HOURS: "48"
-      ALERT_MIN_COUNT: "0"
-      ALERT_MAX_COUNT: "30"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Run smoke
-        run: |
-          chmod +x scripts/smoke.sh
-          bash scripts/smoke.sh
+      - uses: actions/checkout@v4
+      - name: Run smoke tests
+        run: bash scripts/smoke.sh
+        env:
+          API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
+          BASE_URL: https://api.useportpulse.com
+          PORT_OVERVIEW: USLAX
+          PORT_ALERTS: USNYC
+          ALERT_WINDOW: 14d
