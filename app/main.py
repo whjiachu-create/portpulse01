@@ -108,6 +108,9 @@ app.include_router(meta.router, prefix="/v1", tags=["meta"])
 app.include_router(ports.router, prefix="/v1", tags=["ports"])
 app.include_router(hs.router,    prefix="/v1", tags=["trade"])
 app.include_router(ports_extra.router, prefix="/v1/ports", tags=["ports"])
+app.include_router(ports_extra.router, prefix="/v1", tags=["default"])
+app.include_router(ports.router,      prefix="/v1/ports", tags=["ports"])
+app.include_router(meta.router,       prefix="/v1/meta")  # ← 关键：把 meta 掛到 /v1/meta
 
 if __name__ == "__main__":
     import uvicorn
