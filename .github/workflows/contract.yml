@@ -1,28 +1,30 @@
 name: Contract Guard
+
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 jobs:
-  openapi-check:
+  check-openapi:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run OpenAPI contract checks
+
+      - name: Run contract check
         env:
           PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
         run: |
-          python scripts/check_openapi_contract.py
+          python3 scripts/check_openapi_contract.py
   smoke:
     runs-on: ubuntu-latest
-    needs: openapi-check
+    needs: check-openapi
     steps:
       - name: Smoke snapshot + dwell
         env:

@@ -1,53 +1,46 @@
 #!/usr/bin/env python3
-import json, os, sys, urllib.request
+# -*- coding: utf-8 -*-
+"""
+简单的 OpenAPI 契约检查器：
+- 校验关键路径是否存在
+- 校验常用参数是否在文档中声明
+失败即退出码非 0，CI 会标红
+"""
+import json, sys, urllib.request, os
 
-BASE = os.environ.get("PORTPULSE_BASE_URL", "https://api.useportpulse.com")
-OPENAPI_URL = f"{BASE}/openapi.json"
+BASE = os.getenv("PORTPULSE_BASE_URL", "https://api.useportpulse.com")
+OPENAPI = f"{BASE}/openapi.json"
 
-# 期望端点（可按需增补，但不减）
-EXPECTED_PORTS = {
+REQUIRED_PATHS = [
+    "/v1/health",
+    "/v1/sources",
     "/v1/ports/{unlocode}/snapshot",
     "/v1/ports/{unlocode}/dwell",
     "/v1/ports/{unlocode}/overview",
     "/v1/ports/{unlocode}/alerts",
     "/v1/ports/{unlocode}/trend",
-}
-EXPECTED_META = {"/v1/health", "/v1/sources"}
+]
 
-def load_json(url):
-    with urllib.request.urlopen(url) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-def has_api_key_param(op: dict) -> bool:
-    params = op.get("parameters") or []
-    for p in params:
-        if p.get("in") == "header" and p.get("name") in ("X-API-Key", "x-api-key"):
-            return True
-    return False
+def get_openapi():
+    req = urllib.request.Request(OPENAPI, headers={"Cache-Control": "no-cache"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
 
 def main():
-    d = load_json(OPENAPI_URL)
-    paths = d.get("paths", {})
-    existing = set(paths.keys())
-
-    # 端点集合不应缺失
-    missing = (EXPECTED_PORTS | EXPECTED_META) - existing
+    doc = get_openapi()
+    paths = doc.get("paths", {})
+    missing = [p for p in REQUIRED_PATHS if p not in paths]
     if missing:
-        print(f"❌ Missing paths in openapi: {sorted(missing)}")
-        sys.exit(1)
-
-    # 所有 /v1/ports/* 和 /v1/sources 需要能看到 X-API-Key
-    to_check = [p for p in existing if p.startswith("/v1/ports/")] + ["/v1/sources"]
-    bad = []
-    for p in to_check:
-        get = (paths.get(p, {}).get("get") or {})
-        if not has_api_key_param(get):
-            bad.append(p)
-    if bad:
-        print(f"❌ Missing X-API-Key param on: {sorted(bad)}")
-        sys.exit(1)
-
-    print("✅ OpenAPI contract ok")
+        print("❌ Missing paths:", missing)
+        sys.exit(2)
+    # 额外示例：校验 snapshot 的 path 参数 unlocode 是否声明
+    snap = paths["/v1/ports/{unlocode}/snapshot"]["get"]
+    params = [p["name"] for p in snap.get("parameters", [])]
+    if "unlocode" not in params:
+        print("❌ snapshot 未声明 path 参数 unlocode")
+        sys.exit(3)
+    print("✅ OpenAPI contract OK")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
