@@ -1,41 +1,55 @@
 #!/usr/bin/env bash
-# scripts/health_gate.sh
-# 用法（Railway Post-deploy）：BASE_URL=https://api.useportpulse.com bash scripts/health_gate.sh
+# scripts/health_gate.sh (hardened)
+# 规则：连续 PASS_COUNT 次满足 (HTTP 200 且 x-response-time-ms < 阈值) 即视为通过
+# 用于 Railway Post-Deploy 或本地验证
+
 set -euo pipefail
 
-: "${BASE_URL:?BASE_URL not set}"
-# 要求：/v1/health 200 且 x-response-time-ms < 300，连续 3 次
-TRIES="${TRIES:-20}"         # 最多尝试 20 次
-SLEEP="${SLEEP:-5}"          # 间隔 5s
-THRESH_MS="${THRESH_MS:-300}"
-PASS_IN_A_ROW="${PASS_IN_A_ROW:-3}"
+BASE_URL="${BASE_URL:-}"
+if [ -z "${BASE_URL}" ]; then
+  echo "BASE_URL not set"; exit 2
+fi
 
-echo "⛳ Post-deploy gate @ ${BASE_URL} (server<${THRESH_MS}ms, ${PASS_IN_A_ROW} passes)"
+SLOW_SERVER_MS="${SLOW_SERVER_MS:-300}"   # 服务端阈值（x-response-time-ms）
+PASS_COUNT="${PASS_COUNT:-3}"             # 需要连续通过的次数
+MAX_TRIES="${MAX_TRIES:-60}"              # 最多尝试次数（每次间隔 2s）
+SLEEP_SECS="${SLEEP_SECS:-2}"
+
+echo "⛳ Post-deploy gate @ ${BASE_URL} (server<${SLOW_SERVER_MS}ms, ${PASS_COUNT} passes)"
 
 ok=0
-for i in $(seq 1 "$TRIES"); do
-  read -r code ms < <(curl -sSD - "${BASE_URL}/v1/health" -o /dev/null \
-                       -w "%{http_code} %{time_total}" \
-                       | awk 'NR==0{print} END{ }' ) || true
+try=0
 
-  # 取响应头里的 x-response-time-ms（没有就用 time_total*1000 兜底）
-  hdr_ms=$(curl -sSD - "${BASE_URL}/v1/health" -o /dev/null \
-           | awk -F': ' 'tolower($1)=="x-response-time-ms"{gsub(/\r/,"",$2);print $2}' | tail -n1)
-  if [[ -z "$hdr_ms" ]]; then
-    hdr_ms=$(awk -v t="$ms" 'BEGIN{printf "%d", t*1000}')
-  fi
+while [ "$try" -lt "$MAX_TRIES" ]; do
+  try=$((try+1))
+  # 抓 HTTP 码与总耗时，并把响应头另存
+  hdr="$(mktemp)"
+  read -r code t < <(curl -sS -o /dev/null -D "$hdr" \
+        -H "Accept: application/json" -w '%{http_code} %{time_total}' \
+        "${BASE_URL}/v1/health" || echo "000 0")
+  # 解析 x-response-time-ms（可能不存在）
+  server_ms="$(awk -F': ' 'tolower($1)=="x-response-time-ms"{gsub(/\r/,"",$2);print $2}' "$hdr" | head -n1)"
+  rm -f "$hdr"
 
-  if [[ "$code" == "200" && "$hdr_ms" -lt "$THRESH_MS" ]]; then
-    ok=$((ok+1)); echo "✓ pass ${ok}/${PASS_IN_A_ROW}  (http=$code, server=${hdr_ms}ms)"
+  # 统一成整数毫秒
+  e2e_ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
+  if [[ -z "$server_ms" ]]; then server_ms="NA"; fi
+
+  # 打印每次尝试结果
+  echo "… try #$try (http=${code}, e2e=${e2e_ms}ms, server=${server_ms}ms)"
+
+  # 判定
+  if [ "$code" = "200" ] && [[ "$server_ms" != "NA" ]] && [ "$server_ms" -lt "$SLOW_SERVER_MS" ]; then
+    ok=$((ok+1))
+    if [ "$ok" -ge "$PASS_COUNT" ]; then
+      echo "✅ Post-deploy gate passed."
+      exit 0
+    fi
   else
-    ok=0; echo "… wait (http=${code:-NA}, server=${hdr_ms:-NA}ms)"
+    ok=0  # 连续通过被打断
   fi
 
-  if [[ "$ok" -ge "$PASS_IN_A_ROW" ]]; then
-    echo "✅ Healthy after deploy."
-    exit 0
-  fi
-  sleep "$SLEEP"
+  sleep "$SLEEP_SECS"
 done
 
 echo "❌ Post-deploy gate failed."
