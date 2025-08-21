@@ -10,14 +10,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - name: Run smoke.sh
+
+      # （可留可删）如果你的自检脚本不依赖 Python，可以去掉这步以加快速度
+      # - uses: actions/setup-python@v5
+      #   with: { python-version: '3.11' }
+
+      - name: Make selfcheck executable
+        run: chmod +x scripts/selfcheck.sh
+
+      - name: Run API selfcheck (retry once)
         env:
-          API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
           BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
-          PORT_OVERVIEW: ${{ secrets.PORTPULSE_PORT_OVERVIEW }}
-          PORT_ALERTS: ${{ secrets.PORTPULSE_PORT_ALERTS }}
-          ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
+          API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
         run: |
-          bash scripts/smoke.sh || (echo "retry once..." && sleep 10 && bash scripts/smoke.sh)
+          set -e
+          bash scripts/selfcheck.sh 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" \
+          || (echo "retry once..." | tee -a "$GITHUB_STEP_SUMMARY"; sleep 10; bash scripts/selfcheck.sh 2>&1 | tee -a "$GITHUB_STEP_SUMMARY")
