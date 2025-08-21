@@ -1,0 +1,25 @@
+name: Ops Alerts
+
+on:
+  workflow_run:
+    workflows: ["Smoke"]   # 监听我们已有的 Smoke 工作流
+    types: [completed]
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    # 只有当 Smoke 不是 success 时才执行（包括 failure、cancelled、timed_out）
+    if: ${{ github.event.workflow_run.conclusion != 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notify on failure
+        env:
+          OPS_WEBHOOK_URL: ${{ secrets.OPS_WEBHOOK_URL }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          STATUS: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          chmod +x scripts/notify_ops.sh
+          TITLE="PortPulse Smoke ❌ ${STATUS}"
+          TEXT="Check run: ${RUN_URL}"
+          TITLE="$TITLE" TEXT="$TEXT" bash scripts/notify_ops.sh
