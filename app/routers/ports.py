@@ -106,7 +106,11 @@ def _csv_line(values: List[str]) -> str:
         }
     },
 )
-async def port_snapshot(...):
+async def port_snapshot(
+    unlocode: str,
+    _auth: None = Depends(require_api_key),
+    conn=Depends(get_conn),
+):
     """
     设计约束：永不返回顶层 null。
     - 若无数据：返回 {"unlocode": <U>, "snapshot": null}
@@ -160,7 +164,12 @@ async def port_snapshot(...):
         }
     },
 )
-async def port_dwell(...):
+async def port_dwell(
+    unlocode: str,
+    days: int = Query(14, ge=1, le=365, description="返回最近 N 天"),
+    _auth: None = Depends(require_api_key),
+    conn=Depends(get_conn),
+):
 
     """
     返回最近 N 天的停时序列（port_dwell）。
@@ -210,7 +219,12 @@ async def port_dwell(...):
         }
     },
 )
-async def port_overview(...):
+async def port_overview(
+    unlocode: str,
+    format: Literal["json", "csv"] = Query("json", description="返回格式"),
+    _auth: None = Depends(require_api_key),
+    conn=Depends(get_conn),
+):
     
     """
     用最新一条 snapshot 作为该港口的概览。
@@ -296,7 +310,12 @@ async def port_overview(...):
         }
     },
 )
-async def port_alerts(...):
+async def port_alerts(
+    unlocode: str,
+    window: str = Query("14d", description="窗口长度，如 '14d'"),
+    _auth: None = Depends(require_api_key),
+    conn=Depends(get_conn),
+):
     
     """
     简化实现：把 window 解析为天数 N，取最近 N 天 dwell：
