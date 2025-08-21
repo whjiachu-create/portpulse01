@@ -4,7 +4,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from typing import Optional, List, Literal
 from datetime import datetime, date
-
+from fastapi import Response
 from app.deps import require_api_key, get_conn  # 依赖：鉴权 + asyncpg 连接
 
 router = APIRouter(tags=["ports"])
@@ -440,3 +440,7 @@ async def port_trend(
         return PlainTextResponse(content=buf, media_type="text/csv; charset=utf-8")
 
     return TrendResponse(unlocode=U, days=days, points=points)
+
+def _cache(resp: Response, edge_s=300, client_s=30):
+    # 边缘缓存 5 分钟，浏览器 30 秒，允许 30 秒 stale while revalidate
+    resp.headers["Cache-Control"] = f"public, s-maxage={edge_s}, max-age={client_s}, stale-while-revalidate=30"
