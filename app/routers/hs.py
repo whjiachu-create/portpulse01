@@ -1,12 +1,12 @@
 from app.deps import get_conn
-from fastapi import APIRouter, Depends, Path, Query, HTTPException
+from fastapi import APIRouter, Depends,  Query
 from asyncpg.connection import Connection
 from datetime import date, datetime
 from app.deps import get_conn
 from fastapi import APIRouter, HTTPException, Depends   # ← 加上 Depends
 from app.deps import get_conn, require_api_key          # ← 新增这一行
 
-router = APIRouter(prefix="/hs", tags=["trade"])
+router = APIRouter()
 
 def _parse_month_1st(s: str) -> date:
     # 期望 YYYY-MM-01；如果传 YYYY-MM 也自动补 -01
@@ -33,13 +33,14 @@ def _default_range_last_months(months: int = 6) -> tuple[date, date]:
     start = date(y, m, 1)
     return (start, today)
 
-@router.get("/{code}/imports")
+@router.get("/{code}/imports", summary="Hs Imports", tags=["trade"])
 async def hs_imports(
     code: str,
-    frm: str,
-    to: str,
-    conn = Depends(get_conn),
-    auth = Depends(require_api_key),
+    country: str = Query(..., description="Country code"),
+    frm: str = Query(...),
+    to: str = Query(...),
+    _auth: None = Depends(require_api_key),
+    conn=Depends(get_conn)
 ):
     """
     在 hs_imports 上按 code/country/period 过滤，按 period 升序返回。

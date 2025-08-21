@@ -1,97 +1,36 @@
 # app/routers/ports.py
-from __future__ import annotations
+from fastapi import APIRouter, Depends, Query
+from app.deps import require_api_key, get_conn
 
-from typing import Optional
-import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
+router = APIRouter()
 
-from app.deps import get_conn, require_api_key
+@router.get("/{unlocode}/snapshot", summary="Port Snapshot", tags=["ports"])
+async def port_snapshot(unlocode: str, _auth: None = Depends(require_api_key), conn=Depends(get_conn)):
+    # ... 保持你原有实现 ...
+    ...
 
-router = APIRouter(prefix="/ports", tags=["ports"])
+@router.get("/{unlocode}/dwell", summary="Port Dwell", tags=["ports"])
+async def port_dwell(unlocode: str, days: int = Query(30, ge=1, le=365),
+                     _auth: None = Depends(require_api_key), conn=Depends(get_conn)):
+    # ... 保持你原有实现 ...
+    ...
 
+@router.get("/{unlocode}/overview", summary="Port Overview", tags=["ports"])
+async def port_overview(unlocode: str, format: str = "json",
+                        _auth: None = Depends(require_api_key), conn=Depends(get_conn)):
+    # ... 保持你原有实现 ...
+    ...
 
-@router.get("/{unlocode}/snapshot", summary="Port Snapshot")
-async def port_snapshot(
-    unlocode: str,
-    conn: asyncpg.Connection = Depends(get_conn),
-    auth=Depends(require_api_key),
-):
-    """
-    返回该港口最近一条快照（port_snapshots）。
-    """
-    row = await conn.fetchrow(
-        """
-        SELECT snapshot_ts,
-               vessels,
-               avg_wait_hours,
-               congestion_score,
-               src,
-               COALESCE(src_loaded_at, snapshot_ts) AS src_loaded_at
-        FROM port_snapshots
-        WHERE unlocode = $1
-        ORDER BY snapshot_ts DESC
-        LIMIT 1;
-        """,
-        unlocode,
-    )
+@router.get("/{unlocode}/alerts", summary="Port Alerts", tags=["ports"])
+async def port_alerts(unlocode: str, window: str = "14d",
+                      _auth: None = Depends(require_api_key), conn=Depends(get_conn)):
+    # ... 保持你原有实现 ...
+    ...
 
-    if not row:
-        return {"unlocode": unlocode, "snapshot": None}
-
-    return {
-        "unlocode": unlocode,
-        "snapshot": {
-            "snapshot_ts": row["snapshot_ts"].isoformat(),
-            "vessels": int(row["vessels"]),
-            "avg_wait_hours": float(row["avg_wait_hours"]),
-            "congestion_score": float(row["congestion_score"]),
-            "src": row["src"],
-            "src_loaded_at": row["src_loaded_at"].isoformat(),
-        },
-    }
-
-
-@router.get("/{unlocode}/dwell", summary="Port Dwell")
-async def port_dwell(
-    unlocode: str,
-    days: int = Query(30, ge=1, le=365, description="返回最近 N 天"),
-    conn: asyncpg.Connection = Depends(get_conn),
-    auth=Depends(require_api_key),
-):
-    """
-    返回最近 N 天的停时序列（port_dwell）。
-    设计目标：永不 500；即使无数据也返回 {"unlocode":..,"points":[]}
-    """
-    try:
-        rows = await conn.fetch(
-            """
-            SELECT date, dwell_hours, src
-            FROM port_dwell
-            WHERE unlocode = $1
-              AND date >= CURRENT_DATE - $2::int
-            ORDER BY date ASC;
-            """,
-            unlocode,
-            days,
-        )
-    except asyncpg.UndefinedTableError:
-        # 由全局异常也会映射，但这里显式返回更清晰
-        raise HTTPException(status_code=424, detail="table_not_found: port_dwell")
-
-    # 兜底防脏值/空值，永不抛异常
-    points = []
-    for r in rows or []:
-        raw = r["dwell_hours"]
-        try:
-            dh = float(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            dh = None
-        points.append(
-            {
-                "date": r["date"].isoformat(),
-                "dwell_hours": dh,
-                "src": r["src"],
-            }
-        )
-
-    return {"unlocode": unlocode, "points": points}
+@router.get("/{unlocode}/trend", summary="Port Trend", tags=["ports"])
+async def port_trend(unlocode: str, days: int = Query(180, ge=7, le=365),
+                     format: str = "json", fields: str | None = None, tz: str = "UTC",
+                     limit: int = Query(365, ge=1, le=3650), offset: int = Query(0, ge=0, le=100000),
+                     _auth: None = Depends(require_api_key), conn=Depends(get_conn)):
+    # ... 保持你原有实现 ...
+    ...
