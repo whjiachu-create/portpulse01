@@ -82,12 +82,31 @@ def _csv_line(values: List[str]) -> str:
 # 端点：Snapshot（永不顶层 null）
 # =========================
 
-@router.get("/{unlocode}/snapshot", summary="Port Snapshot", response_model=SnapshotResponse)
-async def port_snapshot(
-    unlocode: str,
-    _auth: None = Depends(require_api_key),
-    conn=Depends(get_conn),
-):
+@router.get(
+    "/{unlocode}/snapshot",
+    summary="Port Snapshot",
+    tags=["ports"],
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "unlocode": "USLAX",
+                        "snapshot": {
+                            "snapshot_ts": "2025-08-14T13:20:02.240670Z",
+                            "vessels": 160,
+                            "avg_wait_hours": 3.92,
+                            "congestion_score": 60.0,
+                            "src": "prod",
+                            "src_loaded_at": "2025-08-14T13:20:02.240670Z"
+                        }
+                    }
+                }
+            }
+        }
+    },
+)
+async def port_snapshot(...):
     """
     设计约束：永不返回顶层 null。
     - 若无数据：返回 {"unlocode": <U>, "snapshot": null}
@@ -121,13 +140,28 @@ async def port_snapshot(
 # 端点：Dwell（永不 500，无数据给空数组）
 # =========================
 
-@router.get("/{unlocode}/dwell", summary="Port Dwell", response_model=DwellResponse)
-async def port_dwell(
-    unlocode: str,
-    days: int = Query(30, ge=1, le=365, description="返回最近 N 天"),
-    _auth: None = Depends(require_api_key),
-    conn=Depends(get_conn),
-):
+@router.get(
+    "/{unlocode}/dwell",
+    summary="Port Dwell",
+    tags=["ports"],
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "unlocode": "USLAX",
+                        "points": [
+                            {"date": "2025-08-07", "dwell_hours": 2.84, "src": "prod"},
+                            {"date": "2025-08-08", "dwell_hours": 3.27, "src": "prod"}
+                        ]
+                    }
+                }
+            }
+        }
+    },
+)
+async def port_dwell(...):
+
     """
     返回最近 N 天的停时序列（port_dwell）。
     设计目标：永不 500；即使无数据也返回 {"unlocode":..,"points":[]}
@@ -153,13 +187,31 @@ async def port_dwell(
 # 端点：Overview（json/csv）
 # =========================
 
-@router.get("/{unlocode}/overview", summary="Port Overview")
-async def port_overview(
-    unlocode: str,
-    format: Literal["json", "csv"] = "json",
-    _auth: None = Depends(require_api_key),
-    conn=Depends(get_conn),
-):
+@router.get(
+    "/{unlocode}/overview",
+    summary="Port Overview",
+    tags=["ports"],
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "unlocode": "USLAX",
+                        "as_of": "2025-08-14T13:20:02.240670Z",
+                        "metrics": {
+                            "vessels": 160,
+                            "avg_wait_hours": 3.92,
+                            "congestion_score": 60.0
+                        },
+                        "source": {"src": "prod", "src_loaded_at": "2025-08-14T13:20:02.240670Z"}
+                    }
+                }
+            }
+        }
+    },
+)
+async def port_overview(...):
+    
     """
     用最新一条 snapshot 作为该港口的概览。
     - JSON：返回 as_of + metrics + source
@@ -216,13 +268,36 @@ async def port_overview(
 # 端点：Alerts（基于 dwell 的窗口对比）
 # =========================
 
-@router.get("/{unlocode}/alerts", summary="Port Alerts", response_model=AlertsResponse)
-async def port_alerts(
-    unlocode: str,
-    window: str = Query("14d"),
-    _auth: None = Depends(require_api_key),
-    conn=Depends(get_conn),
-):
+@router.get(
+    "/{unlocode}/alerts",
+    summary="Port Alerts",
+    tags=["ports"],
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "unlocode": "USNYC",
+                        "window_days": 14,
+                        "alerts": [
+                            {
+                                "unlocode": "USNYC",
+                                "type": "dwell_change",
+                                "window_days": 14,
+                                "latest": 2.58,
+                                "baseline": 3.12,
+                                "change": -0.54,
+                                "note": "Δ = latest - baseline（前半窗口均值 vs 后半窗口均值）"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    },
+)
+async def port_alerts(...):
+    
     """
     简化实现：把 window 解析为天数 N，取最近 N 天 dwell：
     - baseline = 前半窗口均值
