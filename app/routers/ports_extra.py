@@ -56,13 +56,14 @@ async def port_overview(
 # -----------------------------
 # Port Alerts（简版）
 # -----------------------------
-@router.get("/{unlocode}/alerts", summary="Port Alerts")
+@router.get("/{unlocode}/alerts")
 async def port_alerts(
     unlocode: str,
     window: str = "14d",
-    conn: asyncpg.Connection = Depends(get_conn),
-    _auth: Any = Depends(require_api_key),
+    conn = Depends(get_conn),
+    auth = Depends(require_api_key),
 ):
+    # 解析窗口
     if not window.endswith("d"):
         raise HTTPException(status_code=400, detail="window must end with 'd'")
     try:
@@ -72,35 +73,26 @@ async def port_alerts(
     if days <= 0 or days > 365:
         raise HTTPException(status_code=400, detail="window out of range")
 
+    # 拉取停时
     recs = await conn.fetch(
         """
-        SELECT date, dwell_hours
+        SELECT date, dwell_hours, src
         FROM port_dwell
         WHERE unlocode = $1
           AND date >= CURRENT_DATE - $2::int
         ORDER BY date ASC
         """,
-        unlocode,
-        days,
+        unlocode, days,
     )
 
-    alerts = []
-    if recs:
-        latest = float(recs[-1]["dwell_hours"])
-        half = max(1, len(recs) // 2)
-        baseline = sum(float(r["dwell_hours"]) for r in recs[:half]) / half
-        change = latest - baseline
-        alerts.append(
-            {
-                "unlocode": unlocode,
-                "type": "dwell_change",
-                "window_days": days,
-                "latest": round(latest, 2),
-                "baseline": round(baseline, 2),
-                "change": round(change, 2),
-                "note": "Δ = latest - baseline (前半窗口均值)",
-            }
-        )
+    points = [
+        {"date": r["date"].isoformat(), "dwell_hours": float(r["dwell_hours"]), "src": r["src"]}
+        for r in recs
+    ]
+
+    # 复用服务逻辑
+    from app.services.alerts import compute_dwell_alert
+    alerts = compute_dwell_alert(points)
 
     return {"unlocode": unlocode, "window_days": days, "alerts": alerts}
 
