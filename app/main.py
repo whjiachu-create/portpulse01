@@ -1,11 +1,6 @@
 # app/main.py
 from __future__ import annotations
-
-import os
-import asyncio
-from datetime import datetime, timezone
-from typing import Any, Dict, List
-
+import os, time
 import asyncpg
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
@@ -17,65 +12,38 @@ from app.middlewares import (
 )
 from app.routers import meta, ports, hs
 
-
 app = FastAPI(
     title="PortPulse & TradeMomentum API",
-    description="PortPulse & TradeMomentum API",
     version="1.1",
+    description="PortPulse & TradeMomentum API",
     openapi_url="/openapi.json",
 )
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-# —— OpenAPI：不动路径，只缓存生成结果
-def custom_openapi():
-    if app.openapi_schema:  # type: ignore[attr-defined]
-        return app.openapi_schema  # type: ignore[attr-defined]
-    schema = app.openapi()
-    app.openapi_schema = schema  # type: ignore[attr-defined]
-    return app.openapi_schema  # type: ignore[attr-defined]
-
-app.openapi = custom_openapi  # type: ignore[assignment]
-
-
-# —— 中间件
+# 中间件顺序：先注入 request-id，再统一错误，再打日志
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(JsonErrorEnvelopeMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
-
-# ========= DB 初始化（非阻塞 + 超时）=========
-app.state.pool = None
-app.state.db_error = None
-DB_DSN = os.getenv("DATABASE_URL")
-
-async def _init_pool_background(dsn: str, timeout: float = 3.0):
-    """后台尝试建立连接池；失败仅记录错误，不阻塞启动。"""
-    try:
-        pool = await asyncio.wait_for(
-            asyncpg.create_pool(
-                dsn=dsn,
-                min_size=1, max_size=10,
-                statement_cache_size=0,                 # 兼容 pgbouncer
-                max_inactive_connection_lifetime=300,
-            ),
-            timeout=timeout,
-        )
-        # 轻探活
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1;")
-        app.state.pool = pool
-        app.state.db_error = None
-    except Exception as e:
-        app.state.pool = None
-        app.state.db_error = f"{type(e).__name__}: {e}"
+DB_DSN = os.getenv("DATABASE_URL", "")
 
 @app.on_event("startup")
 async def on_startup():
-    # 不阻塞：把 DB 初始化丢到后台
-    if DB_DSN:
-        asyncio.create_task(_init_pool_background(DB_DSN))
+    app.state.pool = None
+    app.state.db_error = None
+    if not DB_DSN:
+        return
+    try:
+        # pgbouncer 兼容：statement_cache_size=0
+        app.state.pool = await asyncpg.create_pool(
+            dsn=DB_DSN,
+            min_size=1,
+            max_size=10,
+            statement_cache_size=0,
+            timeout=30,
+            max_inactive_connection_lifetime=300,
+        )
+    except Exception as e:
+        app.state.db_error = f"{type(e).__name__}: {e}"
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -83,40 +51,40 @@ async def on_shutdown():
     if pool:
         await pool.close()
 
-
-# ========= 基础路由 =========
+# 根路径跳转
 @app.get("/", include_in_schema=False)
-async def root():
-    # Railway 的健康检查建议直接配 /v1/health，这里保留到 /docs 的 307 便于人类访问
-    return RedirectResponse(url="/docs", status_code=307)
+def root():
+    return RedirectResponse("/docs", status_code=307)
 
+# 健康检查（DB 可选）
 @app.get("/v1/health", tags=["meta"])
 async def health():
-    return {"ok": True, "ts": _now_iso(), "db": getattr(app.state, "db_error", None)}
+    # 统一返回：ok/ts/db（db 异常时返回错误摘要字符串）
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    pool = getattr(app.state, "pool", None)
+    if not pool:
+        return {"ok": True, "ts": now_iso, "db": None}
+    try:
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1;")
+        return {"ok": True, "ts": now_iso, "db": None}
+    except Exception as e:
+        return {"ok": False, "ts": now_iso, "db": f"{type(e).__name__}: {e}"}
 
-# 调试：查看已注册路由
-@app.get("/_/routes", include_in_schema=False)
-async def list_routes() -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
+# 业务路由
+# 说明：meta.router 不带前缀，这里挂 /v1；ports/hs 分别挂 /v1/ports 与 /v1/hs
+app.include_router(meta.router,  prefix="/v1",      tags=["meta"])
+app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+app.include_router(hs.router,    prefix="/v1/hs",    tags=["trade"])
+
+# 调试路由：列出路由（不进 OpenAPI）
+@app.get("/__routes", include_in_schema=False)
+def list_routes():
+    items = []
     for r in app.router.routes:
         path = getattr(r, "path", None)
+        methods = list(getattr(r, "methods", []) or [])
         name = getattr(r, "name", None)
-        methods = sorted(list(getattr(r, "methods", set())))
         if path:
-            items.append({"path": path, "name": name, "methods": methods})
+            items.append({"path": path, "methods": methods, "name": name})
     return items
-
-
-# ========= 业务路由挂载（统一前缀 /v1）=========
-# 约定：
-#   meta.router 内部声明 "/sources"    -> 对外 /v1/sources
-#   ports.router 内部声明 "/ports"      -> 对外 /v1/ports/...
-#   hs.router 内部声明 "/hs"           -> 对外 /v1/hs/...
-app.include_router(meta.router,  prefix="/v1")
-app.include_router(ports.router, prefix="/v1")
-app.include_router(hs.router,    prefix="/v1")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
