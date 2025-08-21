@@ -1,0 +1,34 @@
+name: Contract Guard
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  openapi-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run OpenAPI contract checks
+        env:
+          PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+        run: |
+          python scripts/check_openapi_contract.py
+  smoke:
+    runs-on: ubuntu-latest
+    needs: openapi-check
+    steps:
+      - name: Smoke snapshot + dwell
+        env:
+          BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+          API_KEY:  ${{ secrets.PORTPULSE_API_KEY }}
+        run: |
+          set -euo pipefail
+          curl -sS -H "X-API-Key: $API_KEY" "$BASE_URL/v1/ports/USLAX/snapshot" | jq .
+          curl -sS -H "X-API-Key: $API_KEY" "$BASE_URL/v1/ports/USLAX/dwell?days=14" | jq .
