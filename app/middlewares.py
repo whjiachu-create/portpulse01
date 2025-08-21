@@ -76,3 +76,40 @@ class JsonErrorEnvelopeMiddleware(BaseHTTPMiddleware):
             )
 
 __all__ = ["RequestIdMiddleware", "AccessLogMiddleware", "JsonErrorEnvelopeMiddleware"]
+
+# app/middlewares.py 末尾追加
+
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.responses import Response
+
+class CacheControlMiddleware:
+    """为只读 GET 的 /v1/ports/ 与 /v1/sources 返回 Cache-Control。
+       - public, max-age=60: 客户端 60s
+       - s-maxage=300: 中间缓存（如 Cloudflare）5 分钟
+       - Vary: Accept
+    """
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                method = scope.get("method", "GET")
+                path = scope.get("path", "")
+                status = message.get("status", 200)
+                if method == "GET" and status == 200 and (path.startswith("/v1/ports/") or path == "/v1/sources"):
+                    headers = dict(message.get("headers", []))
+                    # 追加/覆盖响应头
+                    def set_header(k, v):
+                        headers[k.lower().encode()] = v.encode()
+
+                    set_header("cache-control", "public, max-age=60, s-maxage=300")
+                    set_header("vary", "Accept")
+                    # 回写 headers
+                    message["headers"] = list(headers.items())
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)

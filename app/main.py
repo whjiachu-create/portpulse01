@@ -23,7 +23,8 @@ app = FastAPI(
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(JsonErrorEnvelopeMiddleware)
 app.add_middleware(AccessLogMiddleware)
-
+from app.middlewares import CacheControlMiddleware
+app.add_middleware(CacheControlMiddleware)
 DB_DSN = os.getenv("DATABASE_URL", "")
 
 @app.on_event("startup")
