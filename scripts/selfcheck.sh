@@ -1,109 +1,107 @@
 #!/usr/bin/env bash
-# scripts/selfcheck.sh (v2)
-# 说明：
-# - 仍按原顺序检查 7 个端点；
-# - 任何端点 HTTP 非 200 或耗时 >= SLOW_MS（默认 800ms）→ 脚本以非 0 退出；
-# - 方便在 CI 里作为守门 & 告警触发器。
+# scripts/selfcheck.sh (v3)
+# - 双阈值：服务端阈值(SLOW_SERVER_MS)硬门槛；端到端阈值(SLOW_E2E_MS)仅告警
+# - 任何接口服务端耗时>=阈值 或 HTTP!=200 -> 退出非0
 
-set -u  # 避免使用未定义变量
+set -u
 
 : "${BASE_URL:?BASE_URL not set}"
 : "${API_KEY:?API_KEY not set}"
-SLOW_MS="${SLOW_MS:-800}"   # 可在外部覆写阈值（毫秒）
+
+SLOW_SERVER_MS="${SLOW_SERVER_MS:-300}"   # 服务端阈值（看 x-response-time-ms）
+SLOW_E2E_MS="${SLOW_E2E_MS:-2500}"        # 端到端阈值（仅告警）
 
 green(){ printf '\033[32m%s\033[0m\n' "$*"; }
 yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
 
-# 通用 JSON 接口测速 + 校验
-# 用法：measure_json "名字" "URL" [可选：额外 curl 参数，如 -H "X-API-Key: xxx"]
-measure_json() {
+measure() {
+  # $1 name, $2 url, [extra curl args...]
   local name="$1" url="$2"; shift 2 || true
-  # 输出：HTTP_CODE TIME_TOTAL
-  read -r code t < <(curl -sS -H "Accept: application/json" "$@" -o /dev/null \
+  # 抓响应头 + 端到端耗时
+  local headers tmp; tmp="$(mktemp)"
+  read -r code t < <(curl -sS -D "$tmp" -o /dev/null -H "Accept: application/json" "$@" \
                      -w '%{http_code} %{time_total}' "$url")
-  # 秒转毫秒（整数）
-  local ms; ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
-  if [ "$code" != "200" ]; then
-    red "✗ $name  HTTP $code (${ms}ms)"
-    return 2
-  fi
-  if [ "$ms" -ge "$SLOW_MS" ]; then
-    yellow "! $name  ${ms}ms (>= ${SLOW_MS}ms)"
-    return 1
-  fi
-  green "✓ $name  ${ms}ms"
-  return 0
-}
-
-# CSV 接口测速 + 表头校验
-# 用法：measure_csv "名字" "URL" '期望开头' [可选：额外 curl 参数]
-measure_csv() {
-  local name="$1" url="$2" expect="$3"; shift 3 || true
-  local tmp; tmp="$(mktemp)"
-  read -r code t < <(curl -sS "$@" -o "$tmp" -w '%{http_code} %{time_total}' "$url")
-  local ms; ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
-  if [ "$code" != "200" ]; then
-    red "✗ $name  HTTP $code (${ms}ms)"
-    rm -f "$tmp"
-    return 2
-  fi
-  local head; head="$(head -n1 "$tmp" | tr -d '\r')"
+  # 端到端 ms
+  local e2e_ms; e2e_ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
+  # 服务端 ms（响应头）
+  local server_ms=""; server_ms=$(grep -i '^x-response-time-ms:' "$tmp" | awk '{print $2}' | tr -d '\r')
   rm -f "$tmp"
-  if [[ "$head" != "$expect"* ]]; then
-    red "✗ $name  bad header '${head}' (${ms}ms)"
+
+  if [ "$code" != "200" ]; then
+    red "✗ $name  HTTP $code (e2e=${e2e_ms}ms, server=${server_ms:-NA}ms)"
     return 2
   fi
-  if [ "$ms" -ge "$SLOW_MS" ]; then
-    yellow "! $name  ${ms}ms (>= ${SLOW_MS}ms)"
-    return 1
+
+  # 端到端仅告警
+  if [ "$e2e_ms" -ge "$SLOW_E2E_MS" ]; then
+    yellow "! $name  slow E2E=${e2e_ms}ms (>=${SLOW_E2E_MS}ms)"
+    e2e_warn=1
+  else
+    green "✓ $name  E2E=${e2e_ms}ms"
   fi
-  green "✓ $name  ${ms}ms"
+
+  # 服务端硬门槛（没有该头则不拦截，只提示）
+  if [ -n "$server_ms" ]; then
+    if [ "$server_ms" -ge "$SLOW_SERVER_MS" ]; then
+      red "✗ $name  server=${server_ms}ms (>=${SLOW_SERVER_MS}ms)"
+      return 2
+    fi
+  else
+    yellow "! $name  no x-response-time-ms header"
+  fi
+
   return 0
 }
 
-echo "🔎 Smoke @ ${BASE_URL}  (threshold=${SLOW_MS}ms)"
+measure_csv() {
+  # 同上，但校验表头
+  local name="$1" url="$2" expect="$3"; shift 3 || true
+  local tmp headfile; tmp="$(mktemp)"; headfile="$(mktemp)"
+  read -r code t < <(curl -sS -D "$headfile" -o "$tmp" "$@" -w '%{http_code} %{time_total}' "$url")
+  local e2e_ms; e2e_ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
+  local server_ms=""; server_ms=$(grep -i '^x-response-time-ms:' "$headfile" | awk '{print $2}' | tr -d '\r')
+  local head; head="$(head -n1 "$tmp" | tr -d '\r')"
+  rm -f "$tmp" "$headfile"
 
-slow=0
+  if [ "$code" != "200" ]; then
+    red "✗ $name  HTTP $code (e2e=${e2e_ms}ms, server=${server_ms:-NA}ms)"
+    return 2
+  fi
+  if [[ "$head" != "$expect"* ]]; then
+    red "✗ $name  bad header '${head}'"
+    return 2
+  fi
+
+  if [ "$e2e_ms" -ge "$SLOW_E2E_MS" ]; then
+    yellow "! $name  slow E2E=${e2e_ms}ms (>=${SLOW_E2E_MS}ms)"
+    e2e_warn=1
+  else
+    green "✓ $name  E2E=${e2e_ms}ms"
+  fi
+
+  if [ -n "$server_ms" ] && [ "$server_ms" -ge "$SLOW_SERVER_MS" ]; then
+    red "✗ $name  server=${server_ms}ms (>=${SLOW_SERVER_MS}ms)"
+    return 2
+  fi
+
+  return 0
+}
+
+echo "🔎 Selfcheck @ ${BASE_URL}  (server<${SLOW_SERVER_MS}ms, e2e warn >=${SLOW_E2E_MS}ms)"
+
 fail=0
+e2e_warn=0
 
-# 1) health（无鉴权）
-measure_json "/v1/health" "${BASE_URL}/v1/health" || case $? in 1) slow=1;; 2) fail=1;; esac
+measure "/v1/health"                            "${BASE_URL}/v1/health" || fail=1
+measure "/v1/sources"                           "${BASE_URL}/v1/sources" || fail=1
+measure "/v1/ports/USLAX/snapshot"              "${BASE_URL}/v1/ports/USLAX/snapshot" -H "X-API-Key: ${API_KEY}" || fail=1
+measure "/v1/ports/USLAX/dwell?days=14"         "${BASE_URL}/v1/ports/USLAX/dwell?days=14" -H "X-API-Key: ${API_KEY}" || fail=1
+measure_csv "/v1/ports/USLAX/overview?format=csv" "${BASE_URL}/v1/ports/USLAX/overview?format=csv" 'unlocode,as_of' -H "X-API-Key: ${API_KEY}" || fail=1
+measure "/v1/ports/USNYC/alerts?window=14d"     "${BASE_URL}/v1/ports/USNYC/alerts?window=14d" -H "X-API-Key: ${API_KEY}" || fail=1
+measure "/v1/ports/USLAX/trend"                 "${BASE_URL}/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" -H "X-API-Key: ${API_KEY}" || fail=1
 
-# 2) sources（无鉴权）
-measure_json "/v1/sources" "${BASE_URL}/v1/sources" || case $? in 1) slow=1;; 2) fail=1;; esac
+[ "$fail" -eq 0 ] && echo "✅ Server OK (under ${SLOW_SERVER_MS}ms)."
+[ "$e2e_warn" -ne 0 ] && echo "⚠️  Some endpoints are network-slow (E2E >= ${SLOW_E2E_MS}ms)."
 
-# 3) snapshot（鉴权）
-measure_json "/v1/ports/USLAX/snapshot" \
-  "${BASE_URL}/v1/ports/USLAX/snapshot" -H "X-API-Key: ${API_KEY}" \
-  || case $? in 1) slow=1;; 2) fail=1;; esac
-
-# 4) dwell（鉴权）
-measure_json "/v1/ports/USLAX/dwell?days=14" \
-  "${BASE_URL}/v1/ports/USLAX/dwell?days=14" -H "X-API-Key: ${API_KEY}" \
-  || case $? in 1) slow=1;; 2) fail=1;; esac
-
-# 5) overview（CSV，鉴权，校验表头）
-measure_csv "/v1/ports/USLAX/overview?format=csv" \
-  "${BASE_URL}/v1/ports/USLAX/overview?format=csv" 'unlocode,as_of' -H "X-API-Key: ${API_KEY}" \
-  || case $? in 1) slow=1;; 2) fail=1;; esac
-
-# 6) alerts（鉴权）
-measure_json "/v1/ports/USNYC/alerts?window=14d" \
-  "${BASE_URL}/v1/ports/USNYC/alerts?window=14d" -H "X-API-Key: ${API_KEY}" \
-  || case $? in 1) slow=1;; 2) fail=1;; esac
-
-# 7) trend（鉴权）
-measure_json "/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" \
-  "${BASE_URL}/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" \
-  -H "X-API-Key: ${API_KEY}" \
-  || case $? in 1) slow=1;; 2) fail=1;; esac
-
-if [ "$fail" -eq 0 ] && [ "$slow" -eq 0 ]; then
-  echo "✅ All green"
-  exit 0
-fi
-
-[ "$fail" -ne 0 ] && echo "❌ At least one endpoint failed (non-200 or bad payload)."
-[ "$slow" -ne 0 ] && echo "⚠️  At least one endpoint is slow (>= ${SLOW_MS}ms)."
-exit 1
+exit "$fail"
