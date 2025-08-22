@@ -8,7 +8,8 @@ from typing import Callable
 from fastapi import Request
 import logging
 
-logger = logging.getLogger("uvicorn.access")
+# 使用独立的应用访问日志 logger，避免 uvicorn.AccessFormatter 期望的参数元组
+logger = logging.getLogger("app.access")
 
 # 请求 ID 中间件
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -106,6 +107,19 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
 
         return await call_next(request)
 
+# 轻量的响应时间头中间件：为所有响应写入 X-Response-Time-ms
+class ResponseTimeHeaderMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        start = time.perf_counter()
+        resp = await call_next(request)
+        try:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            # 避免覆盖上游同名头
+            resp.headers.setdefault("X-Response-Time-ms", str(elapsed_ms))
+        except Exception:
+            pass
+        return resp
+
 # 新增：兜底缓存控制中间件
 class DefaultCacheControlMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp, default_policy: str = "public, max-age=300, s-maxage=300"):
@@ -132,4 +146,16 @@ class DefaultCacheControlMiddleware(BaseHTTPMiddleware):
             if path.startswith("/v1/") and path != "/v1/health":
                 resp.headers["Cache-Control"] = self.default_policy
 
+        return resp
+
+class CacheHeaderMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # 对 format=csv 的端点直接放行（由路由设置头部）
+        if request.url.path.startswith("/v1/ports/") and request.query_params.get("format") == "csv":
+            return await call_next(request)
+
+        resp = await call_next(request)
+        # 没设置过再补默认 JSON 缓存头
+        if "cache-control" not in (k.lower() for k in resp.headers.keys()):
+            resp.headers["Cache-Control"] = "public, max-age=300"
         return resp

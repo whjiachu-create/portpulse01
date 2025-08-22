@@ -10,41 +10,22 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from app.middlewares import (
     RequestIdMiddleware,
+    ResponseTimeHeaderMiddleware,  # NEW
     JsonErrorEnvelopeMiddleware,
+    DefaultCacheControlMiddleware,
     AccessLogMiddleware,
+    SimpleRateLimitMiddleware,
+    CacheHeaderMiddleware,
 )
-# 添加限流中间件导入
-from app.middlewares import SimpleRateLimitMiddleware
 
-from app.routers import meta, ports, hs
-
-app = FastAPI(
-    title="PortPulse API",
-    description="Real-time port operations data API",
-    version="1.0.0",
-    terms_of_service="https://useportpulse.com/terms",
-    contact={
-        "name": "PortPulse Team",
-        "url": "https://useportpulse.com",
-        "email": "support@useportpulse.com"
-    },
-    license_info={
-        "name": "Proprietary",
-        "url": "https://useportpulse.com/license"
-    },
-    servers=[
-        {"url": "https://api.useportpulse.com"}
-    ]
-)
 
 # 中间件顺序：先注入 request-id，再统一错误，再打日志
+# middlewares（先写请求 ID，再写响应时间，确保最外层设置头部）
 app.add_middleware(RequestIdMiddleware)
+app.add_middleware(ResponseTimeHeaderMiddleware)
+app.add_middleware(SimpleRateLimitMiddleware, rpm=int(os.getenv("RATE_LIMIT_RPM", "120")))
 app.add_middleware(JsonErrorEnvelopeMiddleware)
-# 添加GZip中间件，最小压缩大小为512字节
-app.add_middleware(GZipMiddleware, minimum_size=512)
-# 添加速率限制中间件
-rate_limit_rpm = int(os.getenv("RATE_LIMIT_RPM", "120"))
-app.add_middleware(SimpleRateLimitMiddleware, rpm=rate_limit_rpm)
+app.add_middleware(DefaultCacheControlMiddleware)  # /v1/health 仍强制 no-store
 app.add_middleware(AccessLogMiddleware)
 
 # 添加兜底缓存控制中间件
@@ -83,62 +64,9 @@ async def on_shutdown():
 def root():
     return RedirectResponse("/docs", status_code=307)
 
-# 健康检查（DB 可选）
-@app.get("/v1/health", tags=["meta"])
-async def health():
-    # 统一返回：ok/ts/db（db 异常时返回错误摘要字符串）
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
-    pool = getattr(app.state, "pool", None)
-
-    # 获取应用版本（从环境变量或默认值）
-    version = os.getenv("APP_VERSION", "unknown")
-
-    # 获取部署区域（从环境变量或默认值）
-    region = os.getenv("RAILWAY_REGION", os.getenv("REGION", "unknown"))
-
-    # 计算运行时间（秒）
-    uptime_seconds = time.time() - getattr(app.state, "start_time", time.time())
-
-    health_response = {
-        "ok": True,
-        "ts": now_iso,
-        "version": version,
-        "region": region,
-        "uptime_seconds": uptime_seconds,
-        "db": None
-    }
-
-    if not pool:
-        from fastapi.responses import Response
-        import json
-        return Response(
-            content=json.dumps(health_response),
-            media_type="application/json",
-            headers={"Cache-Control": "no-store"},
-        )
-    try:
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1;")
-        from fastapi.responses import Response
-        import json
-        return Response(
-            content=json.dumps(health_response),
-            media_type="application/json",
-            headers={"Cache-Control": "no-store"},
-        )
-    except Exception as e:
-        health_response["ok"] = False
-        health_response["db"] = f"{type(e).__name__}: {e}"
-        from fastapi.responses import Response
-        import json
-        return Response(
-            content=json.dumps(health_response),
-            media_type="application/json",
-            headers={"Cache-Control": "no-store"},
-        )
-
 # 业务路由
 # 说明：meta.router 不带前缀，这里挂 /v1；ports/hs 分别挂 /v1/ports 与 /v1/hs
+# 修改: 确保 meta.router 使用 /v1 前缀
 app.include_router(meta.router,  prefix="/v1",      tags=["meta"])
 app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
 app.include_router(hs.router,    prefix="/v1/hs",    tags=["trade"])
@@ -154,3 +82,19 @@ def list_routes():
         if path:
             items.append({"path": path, "methods": methods, "name": name})
     return items
+
+import hashlib
+from fastapi import Response, Request
+from fastapi.responses import PlainTextResponse
+
+@app.get("/v1/ports/{unlocode}/overview")
+async def get_port_overview(
+    unlocode: str,
+    request: Request,
+    format: str = "json"
+):
+    port_data = await ports.get_port_overview(unlocode)
+    if format == "csv":
+        return await ports.get_port_overview_csv(unlocode, request)
+    
+    return port_data
