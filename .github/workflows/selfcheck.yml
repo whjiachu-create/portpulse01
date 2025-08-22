@@ -1,0 +1,36 @@
+name: Selfcheck + Slack
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */6 * * *"   # 每 6 小时跑一次
+  push:
+    branches: [ main ]
+
+jobs:
+  selfcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Run selfcheck
+        env:
+          BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+          API_KEY:  ${{ secrets.PORTPULSE_API_KEY }}
+          SLOW_SERVER_MS: "300"
+          SLOW_E2E_MS: "2500"
+        run: |
+          bash scripts/selfcheck.sh | tee selfcheck.out
+          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
+      - name: Notify Slack (always)
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          STATUS="GREEN"
+          if [ "${{ env.EXIT_CODE }}" != "0" ]; then STATUS="RED"; fi
+          TITLE="PortPulse selfcheck (CI ${{ github.run_number }})"
+          LOG_FILE=selfcheck.out bash scripts/notify_ops.sh

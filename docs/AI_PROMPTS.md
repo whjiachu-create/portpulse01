@@ -30,7 +30,7 @@
 任务：实现 <功能/修复>，涉及：
 	•	<a.py>：<改动点>
 	•	<b.py>：<改动点>
-要求：分文件给完整最终版本，并解释“为什么要改”。
+要求：分文件给完整最终版本，并解释"为什么要改"。
 并提供：
 	•	回滚计划（git 按文件回退命令）
 	•	本地验证命令
@@ -67,7 +67,7 @@
 输出：
 
 	1.	health_gate.sh 需要的 env 清单
-	2.	控制台“Pre-deploy Command”建议文本（可直接粘贴）
+	2.	控制台"Pre-deploy Command"建议文本（可直接粘贴）
 	3.	失败排查清单（≤10 条）
 	4.	如脚本需改，给补丁与 commit message
 ### B7. 数据库索引/迁移（保障 p95 < 300ms）
@@ -94,7 +94,7 @@
 	2.	测试命令 & 样例 payload
 	3.	commit message（ops）
 ### B10. 变更日志 / 发行说明
-根据以下提交摘要生成 CHANGELOG.md 段落（中文，包含“为什么”“如何验证”）：
+根据以下提交摘要生成 CHANGELOG.md 段落（中文，包含"为什么""如何验证"）：
 	•	<粘贴 git log –oneline 范围>
 风格：Keep a Changelog + Conventional Commits 小节。
 ### B11. 回滚/热修应急
@@ -104,8 +104,8 @@
 	2.	验证命令（selfcheck / health_gate）
 	3.	事后补救（测试、索引、文档）
 ### B12. **只看差异，不要重写整文件**（强约束）
-请在不重写整文件的前提下，给出“最小可行 diff”。若必须重写，请逐段说明原因，并保持原有 API 行为、数据结构、日志语义；所有无关行禁止改动（包括空格与排序）。
-输出：先“修改点清单”，再“最终代码”。
+请在不重写整文件的前提下，给出"最小可行 diff"。若必须重写，请逐段说明原因，并保持原有 API 行为、数据结构、日志语义；所有无关行禁止改动（包括空格与排序）。
+输出：先"修改点清单"，再"最终代码"。
 ---
 
 ## C. 常用验证命令（复制即用）
@@ -132,12 +132,99 @@
 - `db: ...` 迁移与索引  
 - `test: ...` 测试
 
-> 每次提交尽量 “小步快跑、可回滚、可验证”。
+> 每次提交尽量 "小步快跑、可回滚、可验证"。
 
 ---
 
 ## E. 协作约定
-- **Lingma-first**：所有代码改动先走 Lingma 模板；我方只做粘贴与验证。  
-- **最小变更**：尽量只改相关行；不动风格与无关空白。  
-- **带验证**：每个改动都必须附带可复制命令。  
+- **Lingma-first**：所有代码改动先由 Lingma 生成建议；团队成员审查并修改后提交。
+- **最小变更**：尽量只改相关行；不动风格与无关空白。
+- **带验证**：每个改动都必须附带可复制命令。
 - **留痕迹**：提交信息清晰，便于回滚与审计。
+
+# AI 协作提示词模板
+
+## 🧠 日常协作提示词模板
+
+### 1. 代码审查建议（Review Suggestion）
+
+> 请以资深后端工程师身份审查以下代码片段，指出潜在问题并提出改进建议：
+>
+> ```python
+> # 示例代码
+> def get_port_data(port_code):
+>     return db.query(Port).filter(Port.code == port_code).first()
+> ```
+>
+> 请从以下角度分析：
+> - 安全性（SQL 注入、权限控制）
+> - 性能（索引、缓存）
+> - 可维护性（异常处理、日志）
+> - 可读性（命名规范、注释）
+
+### 2. Bug 定位与修复（Bug Fix）
+
+> 请分析以下错误日志，定位问题并提供修复方案：
+>
+> ```
+> ERROR:uvicorn.error:Exception in ASGI application
+> Traceback (most recent call last):
+>   File "/app/main.py", line 45, in get_port_overview
+>     data = fetch_port_data(port_code)
+> KeyError: 'USLAX'
+> ```
+>
+> 请回答：
+> 1. 问题根本原因是什么？
+> 2. 如何复现？
+> 3. 提供修复代码（最小改动）
+> 4. 如何防止类似问题再次发生？
+
+### 3. 功能设计评审（Feature Design Review）
+
+> 请评审以下 API 设计方案，指出潜在问题并提出优化建议：
+>
+> - 路径：`GET /v1/ports/{port_code}/weather`
+> - 参数：`?days=7`
+> - 返回：7 天天气预报 JSON
+>
+> 请从以下角度分析：
+> - API 命名规范性
+> - 参数设计合理性
+> - 数据结构清晰度
+> - 是否符合 RESTful 原则
+> - 是否考虑缓存与限流
+
+### 4. 文档撰写（Documentation Writing）
+
+> 请为以下 API 编写 OpenAPI 3.0 文档（YAML 格式）：
+>
+> - 路径：`GET /v1/ports/{port_code}/vessels`
+> - 参数：`?status=active`
+> - 返回：船舶列表（含 vessel_name, imo, eta）
+>
+> 要求：
+> - 包含路径、参数、响应示例
+> - 使用标准 HTTP 状态码
+> - 包含错误响应示例
+
+### 5. 性能优化建议（Performance Optimization）
+
+> 请分析以下 SQL 查询语句，指出性能瓶颈并提供优化方案：
+>
+> ```sql
+> SELECT * FROM port_events
+> WHERE port_code = 'USLAX'
+>   AND event_time BETWEEN '2023-01-01' AND '2023-12-31'
+> ORDER BY event_time DESC;
+> ```
+>
+> 请回答：
+> 1. 当前查询的时间复杂度是多少？
+> 2. 哪些字段需要建立索引？
+> 3. 提供优化后的 SQL 语句
+> 4. 如何验证优化效果？
+
+---
+
+*注：此文档为 PortPulse 项目 AI 协作标准模板，所有团队成员请遵循此格式进行高效协作。*

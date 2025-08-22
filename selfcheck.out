@@ -1,9 +1,9 @@
 🔎 Selfcheck @ https://api.useportpulse.com  (server<300ms, e2e warn >=2500ms)
-[32m✓ /v1/health  E2E=1482ms[0m
-[32m✓ /v1/sources  E2E=2331ms[0m
-[32m✓ /v1/ports/USLAX/snapshot  E2E=1805ms[0m
-[32m✓ /v1/ports/USLAX/dwell?days=14  E2E=1898ms[0m
-[32m✓ /v1/ports/USLAX/overview?format=csv  E2E=1208ms[0m
-[32m✓ /v1/ports/USNYC/alerts?window=14d  E2E=1005ms[0m
-[32m✓ /v1/ports/USLAX/trend  E2E=884ms[0m
+[32m✓ /v1/health  E2E=1322ms[0m
+[32m✓ /v1/sources  E2E=2112ms[0m
+[32m✓ /v1/ports/USLAX/snapshot  E2E=1003ms[0m
+[32m✓ /v1/ports/USLAX/dwell?days=14  E2E=1567ms[0m
+[32m✓ /v1/ports/USLAX/overview?format=csv  E2E=949ms[0m
+[32m✓ /v1/ports/USNYC/alerts?window=14d  E2E=911ms[0m
+[32m✓ /v1/ports/USLAX/trend  E2E=1220ms[0m
 ✅ Server OK (under 300ms).

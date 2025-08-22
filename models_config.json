@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "title": "Qwen Coder (DashScope)",
+      "provider": "openai",
+      "model": "qwen2.5-coder-32b-instruct",
+      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiKey": "sk-db36443e48524546a69b1c39f097b79f"
+    }
+  ],
+  "defaultModel": "Qwen Coder (DashScope)"
+}

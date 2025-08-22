@@ -13,10 +13,22 @@ from app.middlewares import (
 from app.routers import meta, ports, hs
 
 app = FastAPI(
-    title="PortPulse & TradeMomentum API",
-    version="1.1",
-    description="PortPulse & TradeMomentum API",
-    openapi_url="/openapi.json",
+    title="PortPulse API",
+    description="Real-time port operations data API",
+    version="1.0.0",
+    terms_of_service="https://useportpulse.com/terms",
+    contact={
+        "name": "PortPulse Team",
+        "url": "https://useportpulse.com",
+        "email": "support@useportpulse.com"
+    },
+    license_info={
+        "name": "Proprietary",
+        "url": "https://useportpulse.com/license"
+    },
+    servers=[
+        {"url": "https://api.useportpulse.com"}
+    ]
 )
 
 # 中间件顺序：先注入 request-id，再统一错误，再打日志
@@ -63,14 +75,35 @@ async def health():
     # 统一返回：ok/ts/db（db 异常时返回错误摘要字符串）
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
     pool = getattr(app.state, "pool", None)
+
+    # 获取应用版本（从环境变量或默认值）
+    version = os.getenv("APP_VERSION", "unknown")
+
+    # 获取部署区域（从环境变量或默认值）
+    region = os.getenv("RAILWAY_REGION", os.getenv("REGION", "unknown"))
+
+    # 计算运行时间（秒）
+    uptime_seconds = time.time() - getattr(app.state, "start_time", time.time())
+
+    health_response = {
+        "ok": True,
+        "ts": now_iso,
+        "version": version,
+        "region": region,
+        "uptime_seconds": uptime_seconds,
+        "db": None
+    }
+
     if not pool:
-        return {"ok": True, "ts": now_iso, "db": None}
+        return health_response
     try:
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1;")
-        return {"ok": True, "ts": now_iso, "db": None}
+        return health_response
     except Exception as e:
-        return {"ok": False, "ts": now_iso, "db": f"{type(e).__name__}: {e}"}
+        health_response["ok"] = False
+        health_response["db"] = f"{type(e).__name__}: {e}"
+        return health_response
 
 # 业务路由
 # 说明：meta.router 不带前缀，这里挂 /v1；ports/hs 分别挂 /v1/ports 与 /v1/hs

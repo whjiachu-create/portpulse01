@@ -24,43 +24,6 @@ jobs:
         run: |
           pip install httpx
 
-      - name: Run API selfcheck (retry once)
-        env:
-          PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
-          PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
-        run: |
-          set -o pipefail
-          for attempt in 1 2; do
-            if timeout 30s bash scripts/selfcheck.sh 2>&1 | tee selfcheck.out; then
-              echo "Selfcheck passed on attempt $attempt"
-              exit 0
-            else
-              echo "Selfcheck failed on attempt $attempt"
-              if [ $attempt -eq 2 ]; then
-                echo "Both attempts failed"
-                exit 1
-              else
-                sleep 5
-              fi
-            fi
-          done
-
-      - name: Upload selfcheck.out artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: selfcheck-output
-          path: selfcheck.out
-
-      - name: Slack notification
-        if: always() && secrets.SLACK_WEBHOOK_URL != ''
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo GREEN || echo RED)
-          TITLE="PortPulse selfcheck (CI)" LOG_FILE=selfcheck.out \
-            SLACK_WEBHOOK_URL="$SLACK_WEBHOOK_URL" \
-            bash scripts/notify_ops.sh
-
       - name: Run smoke test
         env:
           PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
