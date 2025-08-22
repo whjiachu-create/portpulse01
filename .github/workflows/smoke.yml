@@ -62,6 +62,7 @@ jobs:
             bash scripts/notify_ops.sh
 
       - name: Run smoke test
+        shell: bash
         env:
           PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
           PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
@@ -69,36 +70,34 @@ jobs:
           PORTPULSE_PORT_ALERTS: ${{ secrets.PORTPULSE_PORT_ALERTS }}
           PORTPULSE_ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
         run: |
-          python3 - <<'PY'
-import os
-import httpx
-import time
+          set -euo pipefail
+          python3 --version
+          cat > smoke.py <<'PY'
+          import os, time, sys
+          import httpx
 
-BASE_URL = os.getenv("PORTPULSE_BASE_URL")
-API_KEY = os.getenv("PORTPULSE_API_KEY")
-PORT_OVERVIEW = os.getenv("PORTPULSE_PORT_OVERVIEW")
-PORT_ALERTS = os.getenv("PORTPULSE_PORT_ALERTS")
-ALERT_WINDOW = os.getenv("PORTPULSE_ALERT_WINDOW")
+          BASE_URL = os.getenv("PORTPULSE_BASE_URL", "").rstrip("/")
+          API_KEY  = os.getenv("PORTPULSE_API_KEY", "")
+          PORT_OVV = os.getenv("PORTPULSE_PORT_OVERVIEW", "USLAX")
+          PORT_ALR = os.getenv("PORTPULSE_PORT_ALERTS", "USNYC")
+          ALERT_WIN = os.getenv("PORTPULSE_ALERT_WINDOW", "14d")
 
-HEADERS = {"X-API-Key": API_KEY}
+          headers = {"X-API-Key": API_KEY} if API_KEY else {}
+          client = httpx.Client(timeout=10.0, follow_redirects=True)
 
-def test_endpoint(path):
-    url = f"{BASE_URL}{path}"
-    print(f"Testing {url}...")
-    response = httpx.get(url, headers=HEADERS, timeout=10)
-    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
-    print(f"✅ {path} passed")
+          def get(path: str):
+            url = f"{BASE_URL}{path}"
+            r = client.get(url, headers=headers)
+            ms = int(r.elapsed.total_seconds()*1000)
+            print(f"{path} HTTP {r.status_code}  E2E={ms}ms")
+            r.raise_for_status()
 
-# Retry once on failure
-for attempt in range(2):
-    try:
-        test_endpoint(f"/v1/ports/{PORT_OVERVIEW}/overview")
-        test_endpoint(f"/v1/ports/{PORT_ALERTS}/alerts?window={ALERT_WINDOW}")
-        test_endpoint("/v1/sources")
-        break
-    except Exception as e:
-        print(f"Attempt {attempt + 1} failed: {e}")
-        if attempt == 1:
-            raise
-        time.sleep(5)
-PY
+          get("/v1/health")
+          get("/v1/sources")
+          get(f"/v1/ports/{PORT_OVV}/snapshot")
+          get(f"/v1/ports/{PORT_OVV}/dwell?days=14")
+          get(f"/v1/ports/{PORT_OVV}/overview?format=csv")
+          get(f"/v1/ports/{PORT_ALR}/alerts?window={ALERT_WIN}")
+          get(f"/v1/ports/{PORT_OVV}/trend")
+          PY
+          python3 smoke.py
