@@ -6,8 +6,9 @@ import json
 
 from app.dependencies import get_db_pool
 from app.models import Source
+from datetime import datetime, timezone
 
-router = APIRouter()
+router = APIRouter(tags=["meta"])
 
 @router.get("/sources", response_model=list[Source])
 async def list_sources(response: Response, pool = Depends(get_db_pool)):
@@ -28,11 +29,11 @@ async def list_sources(response: Response, pool = Depends(get_db_pool)):
     return sources
 
 # 健康检查（DB 可选）
-@app.get("/v1/health", tags=["meta"])
+@router.get("/health", tags=["meta"])
 async def health(response: Response):
     # 统一返回：ok/ts/db（db 异常时返回错误摘要字符串）
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
-    pool = getattr(app.state, "pool", None)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    pool = getattr(app.state, "pool", None) if hasattr(app, 'state') else None
 
     # 获取应用版本（从环境变量或默认值）
     version = os.getenv("APP_VERSION", "unknown")
@@ -41,7 +42,7 @@ async def health(response: Response):
     region = os.getenv("RAILWAY_REGION", os.getenv("REGION", "unknown"))
 
     # 计算运行时间（秒）
-    uptime_seconds = time.time() - getattr(app.state, "start_time", time.time())
+    uptime_seconds = time.time() - getattr(app.state, "start_time", time.time()) if hasattr(app, 'state') else 0
 
     health_response = {
         "ok": True,

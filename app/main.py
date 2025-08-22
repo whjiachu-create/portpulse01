@@ -5,11 +5,17 @@ import asyncpg
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
+# 添加GZip中间件导入
+from fastapi.middleware.gzip import GZipMiddleware
+
 from app.middlewares import (
     RequestIdMiddleware,
     JsonErrorEnvelopeMiddleware,
     AccessLogMiddleware,
 )
+# 添加限流中间件导入
+from app.middlewares import SimpleRateLimitMiddleware
+
 from app.routers import meta, ports, hs
 
 app = FastAPI(
@@ -34,9 +40,17 @@ app = FastAPI(
 # 中间件顺序：先注入 request-id，再统一错误，再打日志
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(JsonErrorEnvelopeMiddleware)
+# 添加GZip中间件，最小压缩大小为512字节
+app.add_middleware(GZipMiddleware, minimum_size=512)
+# 添加速率限制中间件
+rate_limit_rpm = int(os.getenv("RATE_LIMIT_RPM", "120"))
+app.add_middleware(SimpleRateLimitMiddleware, rpm=rate_limit_rpm)
 app.add_middleware(AccessLogMiddleware)
-from app.middlewares import CacheControlMiddleware
-app.add_middleware(CacheControlMiddleware)
+
+# 添加兜底缓存控制中间件
+from app.middlewares import DefaultCacheControlMiddleware
+app.add_middleware(DefaultCacheControlMiddleware, default_policy="public, max-age=300")
+
 DB_DSN = os.getenv("DATABASE_URL", "")
 
 @app.on_event("startup")
@@ -95,15 +109,33 @@ async def health():
     }
 
     if not pool:
-        return health_response
+        from fastapi.responses import Response
+        import json
+        return Response(
+            content=json.dumps(health_response),
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
     try:
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1;")
-        return health_response
+        from fastapi.responses import Response
+        import json
+        return Response(
+            content=json.dumps(health_response),
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
     except Exception as e:
         health_response["ok"] = False
         health_response["db"] = f"{type(e).__name__}: {e}"
-        return health_response
+        from fastapi.responses import Response
+        import json
+        return Response(
+            content=json.dumps(health_response),
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
 
 # 业务路由
 # 说明：meta.router 不带前缀，这里挂 /v1；ports/hs 分别挂 /v1/ports 与 /v1/hs
