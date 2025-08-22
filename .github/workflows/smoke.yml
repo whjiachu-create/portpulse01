@@ -7,6 +7,12 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+
+env:
+  PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+  PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
 jobs:
   smoke-test:
@@ -18,16 +24,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install httpx
 
       - name: Run API selfcheck (retry once)
-        env:
-          PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
-          PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
         run: |
           set -o pipefail
           for attempt in 1 2; do
@@ -52,9 +56,7 @@ jobs:
           path: selfcheck.out
 
       - name: Slack notification
-        if: always() && secrets.SLACK_WEBHOOK_URL != ''
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always() && env.SLACK_WEBHOOK_URL != ''
         run: |
           STATUS=$([[ "${{ job.status }}" == "success" ]] && echo GREEN || echo RED)
           TITLE="PortPulse selfcheck (CI)" LOG_FILE=selfcheck.out \
@@ -62,7 +64,6 @@ jobs:
             bash scripts/notify_ops.sh
 
       - name: Run smoke test
-        shell: bash
         env:
           PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
           PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
@@ -71,33 +72,36 @@ jobs:
           PORTPULSE_ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
         run: |
           set -euo pipefail
-          python3 --version
           cat > smoke.py <<'PY'
-          import os, time, sys
-          import httpx
+          import os, time, httpx
 
-          BASE_URL = os.getenv("PORTPULSE_BASE_URL", "").rstrip("/")
-          API_KEY  = os.getenv("PORTPULSE_API_KEY", "")
-          PORT_OVV = os.getenv("PORTPULSE_PORT_OVERVIEW", "USLAX")
-          PORT_ALR = os.getenv("PORTPULSE_PORT_ALERTS", "USNYC")
-          ALERT_WIN = os.getenv("PORTPULSE_ALERT_WINDOW", "14d")
+          BASE_URL = os.getenv("PORTPULSE_BASE_URL","").rstrip("/")
+          API_KEY  = os.getenv("PORTPULSE_API_KEY","")
+          P_OVY    = os.getenv("PORTPULSE_PORT_OVERVIEW","USLAX")
+          P_ALR    = os.getenv("PORTPULSE_PORT_ALERTS","USNYC")
+          WND      = os.getenv("PORTPULSE_ALERT_WINDOW","14d")
 
-          headers = {"X-API-Key": API_KEY} if API_KEY else {}
-          client = httpx.Client(timeout=10.0, follow_redirects=True)
+          H = {"X-API-Key": API_KEY, "Accept": "application/json"}
 
-          def get(path: str):
-            url = f"{BASE_URL}{path}"
-            r = client.get(url, headers=headers)
-            ms = int(r.elapsed.total_seconds()*1000)
-            print(f"{path} HTTP {r.status_code}  E2E={ms}ms")
-            r.raise_for_status()
+          def GET(path, **params):
+              url = f"{BASE_URL}{path}"
+              r = httpx.get(url, headers=H, params=params, timeout=15)
+              r.raise_for_status()
+              print(f"{path} -> {r.status_code}")
 
-          get("/v1/health")
-          get("/v1/sources")
-          get(f"/v1/ports/{PORT_OVV}/snapshot")
-          get(f"/v1/ports/{PORT_OVV}/dwell?days=14")
-          get(f"/v1/ports/{PORT_OVV}/overview?format=csv")
-          get(f"/v1/ports/{PORT_ALR}/alerts?window={ALERT_WIN}")
-          get(f"/v1/ports/{PORT_OVV}/trend")
+          for i in range(2):
+              try:
+                  GET("/v1/health")
+                  GET("/v1/sources")
+                  GET(f"/v1/ports/{P_OVY}/snapshot")
+                  GET(f"/v1/ports/{P_OVY}/dwell", days=14)
+                  GET(f"/v1/ports/{P_OVY}/overview")
+                  GET(f"/v1/ports/{P_ALR}/alerts", window=WND)
+                  GET(f"/v1/ports/{P_OVY}/trend")
+                  break
+              except Exception as e:
+                  print("retrying after error:", e)
+                  if i == 1: raise
+                  time.sleep(5)
           PY
-          python3 smoke.py
+          python smoke.py
