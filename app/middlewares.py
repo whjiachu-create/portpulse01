@@ -1,115 +1,135 @@
 # app/middlewares.py
 from __future__ import annotations
-import logging, time, uuid
-from typing import Callable
+import time, uuid
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
-from fastapi import status
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp
+from starlette.responses import Response
+from typing import Callable
+from fastapi import Request
+import logging
 
-# 简单访问日志记录器
-logger = logging.getLogger("app.access")
-if not logger.handlers:
-    logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("uvicorn.access")
 
-def _gen_id() -> str:
-    return uuid.uuid4().hex[:12]
-
+# 请求 ID 中间件
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """为每个请求注入/传递 X-Request-ID，并附带响应耗时。"""
-    async def dispatch(self, request: Request, call_next: Callable):
-        rid = request.headers.get("X-Request-ID") or _gen_id()
-        request.state.request_id = rid
-        start = time.perf_counter()
-        try:
-            response = await call_next(request)
-        except Exception:
-            # 确保异常路径也能写入响应头（随后由错误中间件包裹）
-            response = Response(status_code=500)
-            raise
-        finally:
-            dur_ms = int((time.perf_counter() - start) * 1000)
-        response.headers["X-Request-ID"] = rid
-        response.headers["X-Response-Time-Ms"] = str(dur_ms)
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
         return response
 
+# 统一错误包装中间件（仅 JSON 错误）
+class JsonErrorEnvelopeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        try:
+            response = await call_next(request)
+            return response
+        except Exception as exc:
+            import json
+            from fastapi.exceptions import HTTPException
+            if isinstance(exc, HTTPException):
+                status_code = exc.status_code
+                detail = exc.detail
+            else:
+                status_code = 500
+                detail = "Internal Server Error"
+
+            error_payload = {
+                "ok": False,
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": str(detail),
+                },
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+            }
+            if hasattr(request.state, "request_id"):
+                error_payload["request_id"] = request.state.request_id
+
+            return Response(
+                content=json.dumps(error_payload),
+                status_code=status_code,
+                media_type="application/json",
+                headers={"Cache-Control": "no-store"},
+            )
+
+# 访问日志中间件
 class AccessLogMiddleware(BaseHTTPMiddleware):
-    """轻量访问日志（method path status duration rid）。"""
-    async def dispatch(self, request: Request, call_next: Callable):
-        start = time.perf_counter()
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        start_time = time.perf_counter()
         response = await call_next(request)
-        dur_ms = int((time.perf_counter() - start) * 1000)
-        rid = getattr(request.state, "request_id", "-")
+        process_time = time.perf_counter() - start_time
+        formatted_time = f"{process_time * 1000:.2f}ms"
+
+        client_ip = request.client.host if request.client else "-"
+        method = request.method
+        path = request.url.path
+        status_code = response.status_code
+        user_agent = request.headers.get("user-agent", "-")
+        request_id = response.headers.get("X-Request-ID", "-")
+
         logger.info(
-            "%s %s %s %s ms rid=%s",
-            request.method, request.url.path, response.status_code, dur_ms, rid
+            f'{client_ip} "{method} {path}" {status_code} {formatted_time} "{user_agent}" {request_id}'
         )
         return response
 
-class JsonErrorEnvelopeMiddleware(BaseHTTPMiddleware):
-    """统一错误包裹：确保始终返回 JSON，带 code/message/request_id。"""
-    async def dispatch(self, request: Request, call_next: Callable):
-        try:
+# 限流中间件
+class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp, rpm: int = 120):
+        super().__init__(app)
+        self.rpm = rpm
+        self.requests = {}
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.method == "OPTIONS":
             return await call_next(request)
-        except RequestValidationError as e:
-            rid = getattr(request.state, "request_id", _gen_id())
-            msg = (e.errors()[0]["msg"] if e.errors() else "Validation error")
-            return JSONResponse(
-                {"code": "validation_error", "message": msg, "request_id": rid},
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
-        except StarletteHTTPException as e:
-            rid = getattr(request.state, "request_id", _gen_id())
-            detail = e.detail if isinstance(e.detail, str) else "HTTP error"
-            return JSONResponse(
-                {"code": f"http_error_{e.status_code}", "message": detail, "request_id": rid},
-                status_code=e.status_code,
-            )
-        except Exception:
-            rid = getattr(request.state, "request_id", _gen_id())
-            logger.exception("Unhandled error rid=%s", rid)
-            return JSONResponse(
-                {"code": "internal_error", "message": "Internal Server Error", "request_id": rid},
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
 
-__all__ = ["RequestIdMiddleware", "AccessLogMiddleware", "JsonErrorEnvelopeMiddleware"]
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        window_start = now - 60
 
-# app/middlewares.py 末尾追加
+        if client_ip not in self.requests:
+            self.requests[client_ip] = []
 
-from starlette.types import ASGIApp, Receive, Scope, Send
-from starlette.responses import Response
+        # 清除窗口外的请求记录
+        self.requests[client_ip] = [
+            req_time for req_time in self.requests[client_ip] if req_time > window_start
+        ]
 
-class CacheControlMiddleware:
-    """为只读 GET 的 /v1/ports/ 与 /v1/sources 返回 Cache-Control。
-       - public, max-age=60: 客户端 60s
-       - s-maxage=300: 中间缓存（如 Cloudflare）5 分钟
-       - Vary: Accept
-    """
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
+        # 检查是否超过限制
+        if len(self.requests[client_ip]) >= self.rpm:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=429, detail="Too Many Requests")
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        if scope["type"] != "http":
-            return await self.app(scope, receive, send)
+        # 记录当前请求
+        self.requests[client_ip].append(now)
 
-        async def send_wrapper(message):
-            if message["type"] == "http.response.start":
-                method = scope.get("method", "GET")
-                path = scope.get("path", "")
-                status = message.get("status", 200)
-                if method == "GET" and status == 200 and (path.startswith("/v1/ports/") or path == "/v1/sources"):
-                    headers = dict(message.get("headers", []))
-                    # 追加/覆盖响应头
-                    def set_header(k, v):
-                        headers[k.lower().encode()] = v.encode()
+        return await call_next(request)
 
-                    set_header("cache-control", "public, max-age=60, s-maxage=300")
-                    set_header("vary", "Accept")
-                    # 回写 headers
-                    message["headers"] = list(headers.items())
-            await send(message)
+# 新增：兜底缓存控制中间件
+class DefaultCacheControlMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp, default_policy: str = "public, max-age=300, s-maxage=300"):
+        super().__init__(app)
+        self.default_policy = default_policy
 
-        await self.app(scope, receive, send_wrapper)
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # 对 /v1/health 路径特殊处理，确保它总是返回 no-store
+        if request.url.path == "/v1/health":
+            resp: Response = await call_next(request)
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+            
+        resp: Response = await call_next(request)
+
+        # 仅 GET 成功响应，且未显式设置时再兜底
+        if (
+            request.method == "GET"
+            and 200 <= resp.status_code < 300
+            and "cache-control" not in {k.lower(): v for k, v in resp.headers.items()}
+        ):
+            path = request.url.path
+            # 只作用在我们 API 命名空间；且跳过 /v1/health
+            if path.startswith("/v1/") and path != "/v1/health":
+                resp.headers["Cache-Control"] = self.default_policy
+
+        return resp
