@@ -1,13 +1,12 @@
-# app/dependencies.py
-from app.deps import get_db_pool  # 从 app.deps 导入 get_db_pool
-__all__ = ["get_db_pool"]
+from fastapi import Request
 
-async def get_db_pool(request: Request) -> Pool:
+def get_db_pool(request: Request):
     """
-    Return the asyncpg pool stored on app.state.
-    main.py 应在 startup 时初始化：app.state.pool = asyncpg.create_pool(...)
+    Return the global async DB pool created in app lifespan.
+    Routers can use: pool = Depends(get_db_pool)
     """
-    pool = getattr(request.app.state, "pool", None)
+    pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
-        raise RuntimeError("DB pool not initialized; check startup hooks")
+        # 明确报错，便于排查启动阶段未初始化连接池的问题
+        raise RuntimeError("DB pool is not initialized on app.state.db_pool")
     return pool
