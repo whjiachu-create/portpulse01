@@ -9,20 +9,22 @@ on:
       - main
   workflow_dispatch:
 
-env:
-  PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
-  PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
-  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
+    env:
+      PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+      PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
+      PORTPULSE_PORT_OVERVIEW: ${{ secrets.PORTPULSE_PORT_OVERVIEW }}
+      PORTPULSE_PORT_ALERTS: ${{ secrets.PORTPULSE_PORT_ALERTS }}
+      PORTPULSE_ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -32,6 +34,9 @@ jobs:
           pip install httpx
 
       - name: Run API selfcheck (retry once)
+        env:
+          BASE_URL: ${{ env.PORTPULSE_BASE_URL }}
+          API_KEY: ${{ env.PORTPULSE_API_KEY }}
         run: |
           set -o pipefail
           for attempt in 1 2; do
@@ -50,6 +55,7 @@ jobs:
           done
 
       - name: Upload selfcheck.out artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: selfcheck-output
