@@ -1,27 +1,43 @@
 #!/usr/bin/env bash
-# 启动应用 + 本地门禁（通过后继续运行，不通过则退出让 Railway 回滚）
+# scripts/start_with_gate.sh
 set -euo pipefail
 
-PORT="${PORT:-8000}"
-APP_CMD=(uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --workers 2 --timeout-keep-alive 15)
+PORT="${PORT:-8080}"
+WORKERS="${WORKERS:-1}"
+APP_CMD="uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers ${WORKERS}"
 
-# 1) 先把应用启动到后台
-"${APP_CMD[@]}" &
+# 这些参数传给 health_gate.sh
+SLOW_SERVER_MS="${SLOW_SERVER_MS:-300}"   # 服务器侧阈值（更严格）
+PASS_COUNT="${PASS_COUNT:-3}"             # 需连续通过的次数
+MAX_TRIES="${MAX_TRIES:-60}"              # 最多尝试次数
+SLEEP_SECS="${SLEEP_SECS:-2}"
+
+echo "▶️ Starting app in background: ${APP_CMD}"
+${APP_CMD} &
 APP_PID=$!
 
-# 2) 跑健康门禁，针对容器本地 127.0.0.1:${PORT}
-export BASE_URL="http://127.0.0.1:${PORT}"
-export SLOW_SERVER_MS="${SLOW_SERVER_MS:-300}"   # 服务端阈值（x-response-time-ms）
-export PASS_COUNT="${PASS_COUNT:-3}"             # 需要连续通过次数
-export MAX_TRIES="${MAX_TRIES:-120}"             # 最多尝试（默认 2 分钟，配合 SLEEP_SECS=1）
-export SLEEP_SECS="${SLEEP_SECS:-1}"
+# 粗略探活：给应用一点启动时间（最多等 30s）
+for i in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:${PORT}/v1/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
 
-bash /app/scripts/health_gate.sh || {
-  echo "health gate failed; stopping app..."
+echo "⛳ Run health gate against http://127.0.0.1:${PORT}"
+if BASE_URL="http://127.0.0.1:${PORT}" \
+     SLOW_SERVER_MS="${SLOW_SERVER_MS}" \
+     PASS_COUNT="${PASS_COUNT}" \
+     MAX_TRIES="${MAX_TRIES}" \
+     SLEEP_SECS="${SLEEP_SECS}" \
+     bash /app/scripts/health_gate.sh
+then
+  echo "✅ Gate passed, keeping app running (pid=${APP_PID})"
+  wait "${APP_PID}"
+else
+  echo "❌ Health gate failed; stopping app (pid=${APP_PID})..."
   kill -TERM "${APP_PID}" || true
-  wait "${APP_PID}" || true
+  sleep 2
+  kill -KILL "${APP_PID}" || true
   exit 1
-}
-
-# 3) 门禁通过后，继续等待前台进程（保持容器存活）
-wait "${APP_PID}"
+fi
