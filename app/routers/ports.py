@@ -7,6 +7,9 @@ from datetime import datetime, date
 from fastapi import Response
 from app.deps import require_api_key, get_conn  # 依赖：鉴权 + asyncpg 连接
 
+# 添加 Request 导入
+from fastapi import Request
+
 router = APIRouter(tags=["ports"])
 
 # =========================
@@ -190,7 +193,8 @@ async def port_dwell(
         DwellPoint(date=r["date"], dwell_hours=float(r["dwell_hours"]), src=r["src"])
         for r in rows
     ]
-    return DwellResponse(unlocode=U, points=points)
+    response = DwellResponse(unlocode=U, points=points)
+    return response
 
 # =========================
 # 端点：Overview（json/csv）
@@ -224,6 +228,7 @@ async def port_overview(
     format: Literal["json", "csv"] = Query("json", description="返回格式"),
     _auth: None = Depends(require_api_key),
     conn=Depends(get_conn),
+    request: Request = None  # 添加 request 参数以获取 headers
 ):
     
     """
@@ -244,6 +249,7 @@ async def port_overview(
     )
 
     if format == "csv":
+        import hashlib
         header = _csv_line(["unlocode", "as_of", "vessels", "avg_wait_hours", "congestion_score"])
         if not row:
             body = _csv_line([U, "", "", "", ""])
@@ -255,16 +261,41 @@ async def port_overview(
                 f"{float(row['avg_wait_hours']):.2f}",
                 f"{float(row['congestion_score']):.1f}",
             ])
+        csv_string = header + body
+        etag = hashlib.sha256(csv_string.encode("utf-8")).hexdigest()[:16]
+        
+        # 检查 If-None-Match 头（兼容大小写）
+        if_none_match = None
+        for key, value in request.headers.items():
+            if key.lower() == "if-none-match":
+                if_none_match = value
+                break
+        
+        # 去掉引号后对比
+        if if_none_match:
+            if if_none_match.startswith('"') and if_none_match.endswith('"'):
+                if_none_match = if_none_match[1:-1]
+            if if_none_match == etag:
+                return Response(status_code=304, headers={
+                    "ETag": f'"{etag}"',
+                    "Cache-Control": "public, max-age=300"
+                })
+        
         return PlainTextResponse(
-            content=header + body,
+            content=csv_string,
             media_type="text/csv; charset=utf-8",
+            headers={
+                "ETag": f'"{etag}"',
+                "Cache-Control": "public, max-age=300"
+            }
         )
 
     # JSON
     if not row:
-        return OverviewResponse(unlocode=U, as_of=None, metrics=None, source=None)
+        response = OverviewResponse(unlocode=U, as_of=None, metrics=None, source=None)
+        return response
 
-    return OverviewResponse(
+    response = OverviewResponse(
         unlocode=U,
         as_of=row["snapshot_ts"],
         metrics={
@@ -277,6 +308,7 @@ async def port_overview(
             src_loaded_at=row["src_loaded_at"],
         ),
     )
+    return response
 
 # =========================
 # 端点：Alerts（基于 dwell 的窗口对比）
@@ -344,7 +376,8 @@ async def port_alerts(
     )
     vals = [float(r["dwell_hours"]) for r in rows]
     if len(vals) < 2:
-        return AlertsResponse(unlocode=U, window_days=days, alerts=[])
+        response = AlertsResponse(unlocode=U, window_days=days, alerts=[])
+        return response
 
     mid = max(1, len(vals) // 2)
     baseline = sum(vals[:mid]) / len(vals[:mid])
@@ -360,7 +393,8 @@ async def port_alerts(
         change=round(change, 2),
         note="Δ = latest - baseline（前半窗口均值 vs 后半窗口均值）",
     )
-    return AlertsResponse(unlocode=U, window_days=days, alerts=[alert])
+    response = AlertsResponse(unlocode=U, window_days=days, alerts=[alert])
+    return response
 
 # =========================
 # 端点：Trend（支持 fields/分页；基于 snapshots 按天聚合）
@@ -437,10 +471,7 @@ async def port_trend(
                 vals.append("" if v is None else str(v))
             vals.append(p.src)
             buf += _csv_line(vals)
-        return PlainTextResponse(content=buf, media_type="text/csv; charset=utf-8")
+        return PlainTextResponse(content=buf, media_type="text/csv; charset=utf-8", headers={"Cache-Control": "public, max-age=300"})
 
-    return TrendResponse(unlocode=U, days=days, points=points)
-
-def _cache(resp: Response, edge_s=300, client_s=30):
-    # 边缘缓存 5 分钟，浏览器 30 秒，允许 30 秒 stale while revalidate
-    resp.headers["Cache-Control"] = f"public, s-maxage={edge_s}, max-age={client_s}, stale-while-revalidate=30"
+    response = TrendResponse(unlocode=U, days=days, points=points)
+    return response
