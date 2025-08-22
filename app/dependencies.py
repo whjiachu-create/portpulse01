@@ -3,10 +3,10 @@ from fastapi import Request
 def get_db_pool(request: Request):
     """
     Return the global async DB pool created in app lifespan.
-    Routers can use: pool = Depends(get_db_pool)
+    Usage in routers: pool = Depends(get_db_pool)
     """
-    pool = getattr(request.app.state, "db_pool", None)
+    # 修改: 将 "db_pool" 改为 "pool" 以匹配 main.py 中的实际属性名
+    pool = getattr(request.app.state, "pool", None)
     if pool is None:
-        # 明确报错，便于排查启动阶段未初始化连接池的问题
-        raise RuntimeError("DB pool is not initialized on app.state.db_pool")
+        raise RuntimeError("DB pool is not initialized on app.state.pool")
     return pool
