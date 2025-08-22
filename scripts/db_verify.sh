@@ -1,57 +1,51 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# scripts/db_verify.sh  (v2)
+# 验证关键查询是否命中预期索引，并给出 EXPLAIN(ANALYZE, BUFFERS)。
 set -euo pipefail
 
-# Check if DATABASE_URL is set
-if [[ -z "${DATABASE_URL:-}" ]]; then
-    echo "Error: DATABASE_URL environment variable is not set" >&2
-    exit 1
-fi
+: "${DATABASE_URL:?DATABASE_URL not set}"
+UNLOCODE="${UNLOCODE:-USLAX}"
 
-set +H
+psql_run() {
+  # 统一的 psql 调用参数：禁止 pager、出错即停
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -P pager=off "$@"
+}
 
 echo "=== PortPulse Database Index Verification ==="
 echo "DATABASE_URL: ${DATABASE_URL}"
+echo "UNLOCODE    : ${UNLOCODE}"
+
+# 1) 最新 snapshot（应命中覆盖索引：idx_snapshots_unloc_ts_cover；目标是 Index Only Scan）
 echo
+echo "Checking: Latest port snapshot"
+echo "Expected index: idx_snapshots_unloc_ts_cover (Index Only Scan ideal)"
+SNAP_SQL="
+SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score
+FROM port_snapshots
+WHERE unlocode = '${UNLOCODE}'
+ORDER BY snapshot_ts DESC
+LIMIT 1;
+"
+echo "SQL:"
+echo "$SNAP_SQL"
+echo "--- EXPLAIN ANALYZE ---"
+psql_run -c "EXPLAIN (ANALYZE, BUFFERS) $SNAP_SQL"
 
-# Function to check if query uses Index Only Scan
-check_index_scan() {
-    local query_name="$1"
-    local query="$2"
-    local expected_index="$3"
-    
-    echo "Checking: $query_name"
-    echo "Expected index: $expected_index"
-    echo "Query: $query"
-    echo
-    
-    # Run EXPLAIN ANALYZE BUFFERS and capture output
-    explain_output=$(psql "$DATABASE_URL" -X -q -t -c "EXPLAIN (ANALYZE, BUFFERS) $query" 2>&1)
-    echo "$explain_output"
-    echo
-    
-    # Check if Index Only Scan was used
-    if echo "$explain_output" | grep -q "Index Only Scan using $expected_index"; then
-        echo "✅ PASS: Using expected index '$expected_index'"
-    else
-        echo "⚠️  WARNING: Not using expected index '$expected_index' (Index Only Scan)"
-        # Print warning in yellow
-        echo -e "\033[33mPlease check if the query is using the correct index and consider optimizing.\033[0m"
-    fi
-    echo
-    echo "----------------------------------------"
-    echo
-}
+# 2) 最近 14 天 dwell（应命中：idx_dwell_unloc_date_cover；目标是 Index Only Scan）
+echo
+echo "Checking: Dwell recent 14d"
+echo "Expected index: idx_dwell_unloc_date_cover (Index Only Scan ideal)"
+DWELL_SQL="
+SELECT date, dwell_hours
+FROM port_dwell
+WHERE unlocode = '${UNLOCODE}'
+ORDER BY date DESC
+LIMIT 14;
+"
+echo "SQL:"
+echo "$DWELL_SQL"
+echo "--- EXPLAIN ANALYZE ---"
+psql_run -c "EXPLAIN (ANALYZE, BUFFERS) $DWELL_SQL"
 
-# Query 1: port_snapshots for latest record of a port
-check_index_scan \
-    "Latest port snapshot" \
-    "SELECT * FROM port_snapshots WHERE unlocode = 'USLAX' ORDER BY timestamp DESC LIMIT 1" \
-    "idx_snapshots_unloc_ts_cover"
-
-# Query 2: port_dwell for last 14 days
-check_index_scan \
-    "Port dwell for last 14 days" \
-    "SELECT * FROM port_dwell WHERE unlocode = 'USLAX' AND date >= CURRENT_DATE - INTERVAL '14 days'" \
-    "idx_dwell_unloc_date_cover"
-
-echo "Verification complete."
+echo
+echo "✅ Done. 观察上面的 'Index Only Scan using ...' 或 'Index Scan using ...' 行与执行时间。"
