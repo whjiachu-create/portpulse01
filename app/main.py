@@ -17,16 +17,20 @@ from app.middlewares import (
     SimpleRateLimitMiddleware,
     CacheHeaderMiddleware,
 )
+from fastapi import FastAPI
+import os
 
+# ⚠️ 先创建 app，再注册任何中间件
+app = FastAPI(title="PortPulse API", version="0.1.0")
 
-# 中间件顺序：先注入 request-id，再统一错误，再打日志
 # middlewares（先写请求 ID，再写响应时间，确保最外层设置头部）
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(ResponseTimeHeaderMiddleware)
-app.add_middleware(SimpleRateLimitMiddleware, rpm=int(os.getenv("RATE_LIMIT_RPM", "120")))
 app.add_middleware(JsonErrorEnvelopeMiddleware)
-app.add_middleware(DefaultCacheControlMiddleware)  # /v1/health 仍强制 no-store
+app.add_middleware(DefaultCacheControlMiddleware)
 app.add_middleware(AccessLogMiddleware)
+app.add_middleware(SimpleRateLimitMiddleware, rpm=int(os.getenv("RATE_LIMIT_RPM", "120")))
+app.add_middleware(CacheHeaderMiddleware)
 
 # 添加兜底缓存控制中间件
 from app.middlewares import DefaultCacheControlMiddleware
