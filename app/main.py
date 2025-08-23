@@ -1,31 +1,37 @@
 from fastapi import FastAPI
-from contextlib import asynccontextmanager
-from .services.deps import init_db_pool, close_db_pool
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db_pool()
-    yield
-    await close_db_pool()
+# Routers
+from app.routers import ports, health
 
-app = FastAPI(lifespan=lifespan)
 
-# 中间件注册保持正确顺序
-from .middlewares import (
-    RequestIdMiddleware,
-    ResponseTimeHeaderMiddleware,
-    JsonErrorEnvelopeMiddleware,
-    DefaultCacheControlMiddleware,
-    AccessLogMiddleware
-)
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="PortPulse API",
+        description="API for port operations and vessel tracking",
+        version="1.0.0"
+    )
 
-app.add_middleware(RequestIdMiddleware)
-app.add_middleware(ResponseTimeHeaderMiddleware)
-app.add_middleware(JsonErrorEnvelopeMiddleware)
-app.add_middleware(DefaultCacheControlMiddleware)
-app.add_middleware(AccessLogMiddleware)
+    # Middlewares
+    from app.middlewares import (
+        RequestIdMiddleware,
+        ResponseTimeHeaderMiddleware,
+        JsonErrorEnvelopeMiddleware,
+        AccessLogMiddleware,
+        DefaultCacheControlMiddleware,
+    )
 
-# 路由注册
-from .routers import meta, ports
-app.include_router(meta.router)
-app.include_router(ports.router)
+    # Include routers
+    app.include_router(health.router, prefix="/health", tags=["health"])
+    app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+
+    # Middleware order: ID → Timing → Error envelope → Access log → Default cache
+    app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(ResponseTimeHeaderMiddleware)
+    app.add_middleware(JsonErrorEnvelopeMiddleware)
+    app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(DefaultCacheControlMiddleware)
+
+    return app
+
+
+app = create_app()

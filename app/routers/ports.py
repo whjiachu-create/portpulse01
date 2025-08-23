@@ -1,47 +1,288 @@
-from fastapi import APIRouter, Depends, Request, Response
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, Union
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
-import hashlib
-from ..dependencies import get_conn, require_api_key
+import logging
+
+from app.models.port import PortOverview, PortCallExpanded, PortCallProcessed
+from app.services.port_service import PortService
+from app.utils.time_utils import parse_time_parameter
+from app.config import settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-def _etag_matches(etag: str, if_none_match: str) -> bool:
-    # 移除引号并处理弱ETag前缀
-    etag = etag.strip('"')
-    if_none_match = if_none_match.strip('"').removeprefix('W/')
-    return etag == if_none_match
+# ETag generation and matching utilities
+def _strong_etag_from_text(text: str) -> str:
+    """Generate a strong ETag from text content"""
+    import hashlib
+    etag_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+    return f'"{etag_hash}"'
 
-@router.get("/v1/ports/overview.csv", dependencies=[Depends(require_api_key)])
-async def get_port_overview_csv(
-    request: Request,
-    response: Response,
-    conn=Depends(get_conn)
-):
-    # 获取数据
-    rows = await conn.fetch("""
-        SELECT port_id, port_name, country, service_count, latest_week
-        FROM port_overview
-        ORDER BY port_name
-    """)
-    
-    # 生成CSV内容
-    csv_content = "port_id,port_name,country,service_count,latest_week\n"
-    for row in rows:
-        csv_content += f"{row['port_id']},{row['port_name']},{row['country']},{row['service_count']},{row['latest_week']}\n"
-    
-    # 计算ETag
-    etag = hashlib.sha256(csv_content.encode()).hexdigest()
-    quoted_etag = f'"{etag}"'
-    
-    # 检查If-None-Match头
+def _client_etags(request: Request) -> List[str]:
+    """Extract ETags from If-None-Match header"""
     if_none_match = request.headers.get("if-none-match")
-    if if_none_match and _etag_matches(quoted_etag, if_none_match):
-        return Response(status_code=304)
+    if not if_none_match:
+        return []
     
-    # 设置响应头
-    response.headers["ETag"] = quoted_etag
-    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
-    response.headers["Vary"] = "Accept-Encoding"
-    response.headers["X-CSV-Source"] = "ports:overview:strong-etag"
+    # Split by comma and strip whitespace and quotes
+    etags = [tag.strip().strip('"') for tag in if_none_match.split(",")]
+    return etags
+
+def _etag_matches(etag: str, client_etags: List[str]) -> bool:
+    """Check if ETag matches any of client's ETags (weak comparison compatible)"""
+    if not client_etags:
+        return False
     
-    return PlainTextResponse(content=csv_content, media_type="text/csv")
+    # Strip quotes from our strong etag for comparison
+    clean_etag = etag.strip('"')
+    
+    # Check for both strong and weak etag matches
+    for client_etag in client_etags:
+        # Remove W/ prefix if present (weak etag)
+        if client_etag.startswith('W/'):
+            client_etag = client_etag[2:]
+        client_etag = client_etag.strip('"')
+        
+        if clean_etag == client_etag:
+            return True
+    
+    return False
+
+CSV_SOURCE_TAG = "ports:overview:strong-etag"
+
+@router.api_route(
+    "/{unlocode}/overview",
+    methods=["GET", "HEAD"],
+    summary="Port Overview",
+    tags=["ports"],
+)
+async def port_overview(
+    request: Request,
+    unlocode: str,
+    from_time: Optional[str] = None,
+    to_time: Optional[str] = None
+) -> Union[Response, PlainTextResponse]:
+    """
+    Get port overview data in CSV format
+    
+    Supports both GET and HEAD methods with ETag-based caching.
+    Returns 304 if ETag matches, 200 with headers only for HEAD, 
+    and 200 with content for GET.
+    """
+    
+    # Parse time parameters
+    try:
+        parsed_from_time = parse_time_parameter(from_time) if from_time else datetime.utcnow() - timedelta(days=1)
+        parsed_to_time = parse_time_parameter(to_time) if to_time else datetime.utcnow() + timedelta(days=7)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Get data from service
+    port_service = PortService()
+    try:
+        data = await port_service.get_port_overview(unlocode, parsed_from_time, parsed_to_time)
+    except Exception as e:
+        logger.error(f"Error fetching port overview for {unlocode}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
+    
+    # Convert to CSV
+    csv_lines = ["IMO,Name,Status,Last Port,Destination,Arrival,Departure,Reported,Lat,Lon,Speed,Course,Heading,Current Port"]
+    
+    for entry in data:
+        # Format datetime fields
+        arrival_str = entry.arrival.strftime("%Y-%m-%d %H:%M") if entry.arrival else ""
+        departure_str = entry.departure.strftime("%Y-%m-%d %H:%M") if entry.departure else ""
+        reported_str = entry.reported.strftime("%Y-%m-%d %H:%M") if entry.reported else ""
+        
+        line = f"{entry.imo},{entry.name},{entry.status},{entry.last_port}," \
+               f"{entry.destination},{arrival_str},{departure_str},{reported_str}," \
+               f"{entry.lat},{entry.lon},{entry.speed},{entry.course},{entry.heading},{entry.current_port}"
+        csv_lines.append(line)
+    
+    csv_string = "\n".join(csv_lines)
+    
+    # Handle ETag and caching logic
+    etag = _strong_etag_from_text(csv_string)
+    client_tags = _client_etags(request)
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "public, max-age=300, no-transform",
+        "Vary": "Accept-Encoding",
+        "X-CSV-Source": CSV_SOURCE_TAG,
+    }
+    
+    if _etag_matches(etag, client_tags):
+        return Response(status_code=304, headers=headers)
+    
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers)
+    
+    # Record timing
+    logger.info(f"Port overview for {unlocode} generated successfully")
+    
+    return PlainTextResponse(
+        content=csv_string,
+        media_type="text/csv; charset=utf-8",
+        headers=headers,
+    )
+
+@router.get(
+    "/{unlocode}/calls",
+    response_model=List[PortCallExpanded],
+    summary="Port Calls",
+    tags=["ports"],
+)
+async def port_calls(
+    unlocode: str,
+    from_time: Optional[str] = None,
+    to_time: Optional[str] = None,
+    limit: Optional[int] = None,
+    sort: Optional[str] = None
+) -> List[PortCallExpanded]:
+    """
+    Get detailed port calls information
+    """
+    # Parse time parameters
+    try:
+        parsed_from_time = parse_time_parameter(from_time) if from_time else datetime.utcnow() - timedelta(days=7)
+        parsed_to_time = parse_time_parameter(to_time) if to_time else datetime.utcnow() + timedelta(days=1)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Validate sort parameter
+    valid_sort_options = ['arrival', 'departure', 'reported', 'imo']
+    if sort and sort not in valid_sort_options:
+        raise HTTPException(status_code=400, detail=f"Invalid sort option. Valid options: {valid_sort_options}")
+    
+    # Get data from service
+    port_service = PortService()
+    try:
+        data = await port_service.get_port_calls(unlocode, parsed_from_time, parsed_to_time)
+    except Exception as e:
+        logger.error(f"Error fetching port calls for {unlocode}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
+    
+    # Convert to response model
+    result = [
+        PortCallExpanded(
+            imo=entry.imo,
+            name=entry.name,
+            status=entry.status,
+            last_port=entry.last_port,
+            destination=entry.destination,
+            arrival=entry.arrival,
+            departure=entry.departure,
+            reported=entry.reported,
+            lat=entry.lat,
+            lon=entry.lon,
+            speed=entry.speed,
+            course=entry.course,
+            heading=entry.heading,
+            current_port=entry.current_port
+        )
+        for entry in data
+    ]
+    
+    # Apply sorting
+    if sort:
+        reverse = sort in ['arrival', 'departure', 'reported']
+        result.sort(key=lambda x: getattr(x, sort) or (datetime.min if reverse else datetime.max), reverse=reverse)
+    
+    # Apply limit
+    if limit and limit > 0:
+        result = result[:limit]
+    
+    return result
+
+@router.get(
+    "/{unlocode}/calls/processed",
+    response_model=List[PortCallProcessed],
+    summary="Processed Port Calls",
+    tags=["ports"],
+)
+async def processed_port_calls(
+    unlocode: str,
+    from_time: Optional[str] = None,
+    to_time: Optional[str] = None,
+    limit: Optional[int] = None,
+    sort: Optional[str] = None
+) -> List[PortCallProcessed]:
+    """
+    Get processed port calls information with additional calculated fields
+    """
+    # Parse time parameters
+    try:
+        parsed_from_time = parse_time_parameter(from_time) if from_time else datetime.utcnow() - timedelta(days=7)
+        parsed_to_time = parse_time_parameter(to_time) if to_time else datetime.utcnow() + timedelta(days=1)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Validate sort parameter
+    valid_sort_options = ['arrival', 'departure', 'reported', 'imo', 'time_in_port']
+    if sort and sort not in valid_sort_options:
+        raise HTTPException(status_code=400, detail=f"Invalid sort option. Valid options: {valid_sort_options}")
+    
+    # Get data from service
+    port_service = PortService()
+    try:
+        data = await port_service.get_port_calls(unlocode, parsed_from_time, parsed_to_time)
+    except Exception as e:
+        logger.error(f"Error fetching processed port calls for {unlocode}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
+    
+    # Process data
+    result = []
+    for i, entry in enumerate(data):
+        # Calculate time in port
+        time_in_port = None
+        if entry.arrival and entry.departure:
+            time_in_port = (entry.departure - entry.arrival).total_seconds() / 3600  # in hours
+        
+        # Determine next port
+        next_port = None
+        if i < len(data) - 1:
+            next_port = data[i + 1].destination
+        
+        processed_entry = PortCallProcessed(
+            imo=entry.imo,
+            name=entry.name,
+            status=entry.status,
+            last_port=entry.last_port,
+            destination=entry.destination,
+            arrival=entry.arrival,
+            departure=entry.departure,
+            reported=entry.reported,
+            lat=entry.lat,
+            lon=entry.lon,
+            speed=entry.speed,
+            course=entry.course,
+            heading=entry.heading,
+            current_port=entry.current_port,
+            time_in_port=time_in_port,
+            next_port=next_port
+        )
+        result.append(processed_entry)
+    
+    # Apply sorting
+    if sort:
+        reverse = sort in ['arrival', 'departure', 'reported']
+        if sort == 'time_in_port':
+            result.sort(key=lambda x: x.time_in_port or (0 if reverse else float('inf')), reverse=reverse)
+        else:
+            result.sort(key=lambda x: getattr(x, sort) or (datetime.min if reverse else datetime.max), reverse=reverse)
+    
+    # Apply limit
+    if limit and limit > 0:
+        result = result[:limit]
+    
+    return result
