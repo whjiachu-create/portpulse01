@@ -1,0 +1,19 @@
+name: Main Smoke (production)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prod smoke
+        env:
+          BASE: "https://api.useportpulse.com"
+          UNLOCODE: "USLAX"
+          API_HEADER: "X-API-Key: dev_key_123"
+        run: bash scripts/smoke_prod.sh

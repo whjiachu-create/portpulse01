@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Tuple
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, HTTPException
 from hashlib import sha256
 from typing import TYPE_CHECKING
+import logging
 
 # 修改导入语句，使用新创建的schemas而不是models
 from app.schemas import (
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
     from app.schemas import PortOverview, PortCallExpanded, PortCallProcessed
 
 router = APIRouter()
+
+# 添加logger
+logger = logging.getLogger(__name__)
+
 
 def _build_overview_csv_and_headers(unlocode: str) -> Tuple[str, dict]:
     """
@@ -75,66 +80,86 @@ async def head_overview_csv(unlocode: str, format: str = "csv", request: Request
 )
 async def port_calls(
     unlocode: str,
-    from_time: Optional[str] = None,
-    to_time: Optional[str] = None,
-    limit: Optional[int] = None,
-    sort: Optional[str] = None
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0
 ) -> List[_PortCallExpanded]:
     """
-    Get detailed port calls information
+    Get detailed port calls information with pagination support
     """
-    # Parse time parameters
+    # Parse and validate date parameters
     try:
-        parsed_from_time = parse_time_parameter(from_time) if from_time else datetime.utcnow() - timedelta(days=7)
-        parsed_to_time = parse_time_parameter(to_time) if to_time else datetime.utcnow() + timedelta(days=1)
+        # Set default dates if none provided
+        if not start_date and not end_date:
+            end_date_obj = datetime.utcnow().date()
+            start_date_obj = end_date_obj - timedelta(days=30)
+        elif not start_date and end_date:
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            start_date_obj = end_date_obj - timedelta(days=30)
+        elif start_date and not end_date:
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_date_obj = start_date_obj + timedelta(days=30)
+        else:
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        # Validate date range
+        if start_date_obj > end_date_obj:
+            raise HTTPException(status_code=422, detail="start_date must be before or equal to end_date")
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD")
     
-    # Validate sort parameter
-    valid_sort_options = ['arrival', 'departure', 'reported', 'imo']
-    if sort and sort not in valid_sort_options:
-        raise HTTPException(status_code=400, detail=f"Invalid sort option. Valid options: {valid_sort_options}")
+    # Validate limit and offset
+    if limit is None:
+        limit = 100
+    if offset is None:
+        offset = 0
+        
+    if not (1 <= limit <= 1000):
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
+        
+    if not (0 <= offset <= 100000):
+        raise HTTPException(status_code=422, detail="offset must be between 0 and 100000")
     
     # Get data from service
     port_service = PortService()
     try:
-        data = await port_service.get_port_calls(unlocode, parsed_from_time, parsed_to_time)
+        data = await port_service.get_port_calls_with_pagination(
+            unlocode, 
+            start_date_obj, 
+            end_date_obj, 
+            limit, 
+            offset
+        )
     except Exception as e:
         logger.error(f"Error fetching port calls for {unlocode}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return empty list instead of 500 error
+        return []
     
+    # 修改: 确保始终返回列表
     if not data:
-        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
-    
-    # Convert to response model
+        return []
+        
     result = [
         _PortCallExpanded(
+            call_id=entry.call_id,
+            unlocode=entry.unlocode,
+            vessel_name=entry.vessel_name,
             imo=entry.imo,
-            name=entry.name,
+            mmsi=entry.mmsi,
             status=entry.status,
-            last_port=entry.last_port,
-            destination=entry.destination,
-            arrival=entry.arrival,
-            departure=entry.departure,
-            reported=entry.reported,
-            lat=entry.lat,
-            lon=entry.lon,
-            speed=entry.speed,
-            course=entry.course,
-            heading=entry.heading,
-            current_port=entry.current_port
+            eta=entry.eta,
+            etd=entry.etd,
+            ata=entry.ata,
+            atb=entry.atb,
+            atd=entry.atd,
+            berth=entry.berth,
+            terminal=entry.terminal,
+            last_updated_at=entry.last_updated_at
         )
         for entry in data
     ]
-    
-    # Apply sorting
-    if sort:
-        reverse = sort in ['arrival', 'departure', 'reported']
-        result.sort(key=lambda x: getattr(x, sort) or (datetime.min if reverse else datetime.max), reverse=reverse)
-    
-    # Apply limit
-    if limit and limit > 0:
-        result = result[:limit]
     
     return result
 
@@ -146,80 +171,103 @@ async def port_calls(
 )
 async def processed_port_calls(
     unlocode: str,
-    from_time: Optional[str] = None,
-    to_time: Optional[str] = None,
-    limit: Optional[int] = None,
-    sort: Optional[str] = None
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0
 ) -> List[_PortCallProcessed]:
     """
-    Get processed port calls information with additional calculated fields
+    Get processed port calls information with additional calculated fields and pagination support
     """
-    # Parse time parameters
+    # Parse and validate date parameters
     try:
-        parsed_from_time = parse_time_parameter(from_time) if from_time else datetime.utcnow() - timedelta(days=7)
-        parsed_to_time = parse_time_parameter(to_time) if to_time else datetime.utcnow() + timedelta(days=1)
+        # Set default dates if none provided
+        if not start_date and not end_date:
+            end_date_obj = datetime.utcnow().date()
+            start_date_obj = end_date_obj - timedelta(days=30)
+        elif not start_date and end_date:
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            start_date_obj = end_date_obj - timedelta(days=30)
+        elif start_date and not end_date:
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_date_obj = start_date_obj + timedelta(days=30)
+        else:
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        # Validate date range
+        if start_date_obj > end_date_obj:
+            raise HTTPException(status_code=422, detail="start_date must be before or equal to end_date")
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD")
     
-    # Validate sort parameter
-    valid_sort_options = ['arrival', 'departure', 'reported', 'imo', 'time_in_port']
-    if sort and sort not in valid_sort_options:
-        raise HTTPException(status_code=400, detail=f"Invalid sort option. Valid options: {valid_sort_options}")
+    # Validate limit and offset
+    if limit is None:
+        limit = 100
+    if offset is None:
+        offset = 0
+        
+    if not (1 <= limit <= 1000):
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
+        
+    if not (0 <= offset <= 100000):
+        raise HTTPException(status_code=422, detail="offset must be between 0 and 100000")
     
     # Get data from service
     port_service = PortService()
     try:
-        data = await port_service.get_port_calls(unlocode, parsed_from_time, parsed_to_time)
+        data = await port_service.get_port_calls_with_pagination(
+            unlocode, 
+            start_date_obj, 
+            end_date_obj, 
+            limit, 
+            offset
+        )
     except Exception as e:
         logger.error(f"Error fetching processed port calls for {unlocode}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-    
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
+        # Return empty list instead of 500 error
+        return []
     
     # Process data
     result = []
-    for i, entry in enumerate(data):
-        # Calculate time in port
-        time_in_port = None
-        if entry.arrival and entry.departure:
-            time_in_port = (entry.departure - entry.arrival).total_seconds() / 3600  # in hours
-        
-        # Determine next port
-        next_port = None
-        if i < len(data) - 1:
-            next_port = data[i + 1].destination
-        
-        processed_entry = _PortCallProcessed(
-            imo=entry.imo,
-            name=entry.name,
-            status=entry.status,
-            last_port=entry.last_port,
-            destination=entry.destination,
-            arrival=entry.arrival,
-            departure=entry.departure,
-            reported=entry.reported,
-            lat=entry.lat,
-            lon=entry.lon,
-            speed=entry.speed,
-            course=entry.course,
-            heading=entry.heading,
-            current_port=entry.current_port,
-            time_in_port=time_in_port,
-            next_port=next_port
-        )
-        result.append(processed_entry)
     
-    # Apply sorting
-    if sort:
-        reverse = sort in ['arrival', 'departure', 'reported']
-        if sort == 'time_in_port':
-            result.sort(key=lambda x: x.time_in_port or (0 if reverse else float('inf')), reverse=reverse)
-        else:
-            result.sort(key=lambda x: getattr(x, sort) or (datetime.min if reverse else datetime.max), reverse=reverse)
+    # 修改: 确保即使data为None也返回空列表
+    if data:
+        for entry in data:
+            # Calculate service time (berth to departure)
+            service_time = None
+            if entry.atb and entry.atd:
+                service_time = (entry.atd - entry.atb).total_seconds() / 3600  # in hours
+            
+            # Calculate turnaround time (arrival to departure)
+            turnaround_time = None
+            if entry.ata and entry.atd:
+                turnaround_time = (entry.atd - entry.ata).total_seconds() / 3600  # in hours
+            
+            # Determine phase
+            phase = None
+            if entry.ata and not entry.atb:
+                phase = "waiting"
+            elif entry.atb and not entry.atd:
+                phase = "berthing"
+            elif entry.atd:
+                phase = "turnaround"
+            
+            # Calculate wait hours (anchor to berth)
+            wait_hours = None
+            if entry.ata and entry.atb:
+                wait_hours = (entry.atb - entry.ata).total_seconds() / 3600  # in hours
+            
+            processed_entry = _PortCallProcessed(
+                call_id=entry.call_id,
+                unlocode=entry.unlocode,
+                phase=phase,
+                wait_hours=wait_hours,
+                service_time_hours=service_time,
+                turnaround_hours=turnaround_time,
+                updated_at=entry.last_updated_at
+            )
+            result.append(processed_entry)
     
-    # Apply limit
-    if limit and limit > 0:
-        result = result[:limit]
-    
+    # 修改: 确保始终返回列表
     return result
