@@ -4,8 +4,19 @@ from fastapi import APIRouter, Request, Response
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
+try:
+    from app.models import (
+        PortOverview as _PortOverview,
+        PortCallExpanded as _PortCallExpanded,
+        PortCallProcessed as _PortCallProcessed,
+    )
+except Exception:
+    _PortOverview = dict
+    _PortCallExpanded = dict
+    _PortCallProcessed = dict
+
 if TYPE_CHECKING:
-    from app.models import PortCallExpanded, PortCallProcessed
+    from app.models import PortOverview, PortCallExpanded, PortCallProcessed
 
 router = APIRouter()
 
@@ -53,7 +64,7 @@ async def head_overview_csv(unlocode: str, format: str = "csv", request: Request
 
 @router.get(
     "/{unlocode}/calls",
-    response_model=List[PortCallExpanded],
+    response_model=List[_PortCallExpanded],
     summary="Port Calls",
     tags=["ports"],
 )
@@ -63,7 +74,7 @@ async def port_calls(
     to_time: Optional[str] = None,
     limit: Optional[int] = None,
     sort: Optional[str] = None
-) -> List[PortCallExpanded]:
+) -> List[_PortCallExpanded]:
     """
     Get detailed port calls information
     """
@@ -124,7 +135,7 @@ async def port_calls(
 
 @router.get(
     "/{unlocode}/calls/processed",
-    response_model=List[PortCallProcessed],
+    response_model=List[_PortCallProcessed],
     summary="Processed Port Calls",
     tags=["ports"],
 )
@@ -134,7 +145,7 @@ async def processed_port_calls(
     to_time: Optional[str] = None,
     limit: Optional[int] = None,
     sort: Optional[str] = None
-) -> List[PortCallProcessed]:
+) -> List[_PortCallProcessed]:
     """
     Get processed port calls information with additional calculated fields
     """
