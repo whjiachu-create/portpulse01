@@ -1,33 +1,21 @@
 from __future__ import annotations
-from fastapi import APIRouter, Response, Depends
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from datetime import datetime, timezone
 import time
+from ..services.deps import get_db_pool
 
-from app.dependencies import get_db_pool
-from app.models import Source
+router = APIRouter()
 
-router = APIRouter(tags=["meta"])
-
-@router.get("/health")
-async def health():
-    # Railway gate 使用；必须总是 200 且 no-store
-    return JSONResponse(content={"ok": True, "ts": time.time()},
-                        headers={"Cache-Control": "no-store"})
-
-@router.get("/sources", response_model=list[Source])
-async def list_sources(response: Response, pool = Depends(get_db_pool)):
-    rows = await pool.fetch(
-        "SELECT id, name, url, last_updated FROM public.sources ORDER BY id;"
+@router.get("/v1/health")
+async def health_check():
+    return JSONResponse(
+        {"ok": True, "ts": time.time()},
+        headers={"Cache-Control": "no-store"}
     )
-    sources = [
-        {
-            "id": int(r["id"]),
-            "name": r["name"],
-            "url": r["url"],
-            "last_updated": r["last_updated"].isoformat(),
-        }
-        for r in rows
-    ]
-    response.headers["Cache-Control"] = "public, max-age=300, s-maxage=300"
-    return sources
+
+@router.get("/v1/meta/dependencies")
+async def list_dependencies(pool=Depends(get_db_pool)):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT DISTINCT name FROM dependencies ORDER BY name")
+        deps = [row["name"] for row in rows]
+        return {"dependencies": deps}
