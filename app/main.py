@@ -26,6 +26,7 @@ app.add_middleware(DefaultCacheControlMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
 # 路由注册
-from .routers import meta, ports
-app.include_router(meta.router)
-app.include_router(ports.router)
+from .routers.meta import router as meta_router
+from .routers.ports import router as ports_router
+app.include_router(meta_router,  prefix="/v1",       tags=["meta"])
+app.include_router(ports_router, prefix="/v1/ports", tags=["ports"])
