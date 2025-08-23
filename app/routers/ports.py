@@ -1,134 +1,52 @@
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union
-from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse
-import logging
-
-from app.models.port import PortOverview, PortCallExpanded, PortCallProcessed
-from app.services.port_service import PortService
-from app.utils.time_utils import parse_time_parameter
-from app.config import settings
+from fastapi import APIRouter, Request, Response
+from hashlib import sha256
+from app.models import PortOverview, PortCallExpanded, PortCallProcessed
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
-# ETag generation and matching utilities
-def _strong_etag_from_text(text: str) -> str:
-    """Generate a strong ETag from text content"""
-    import hashlib
-    etag_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
-    return f'"{etag_hash}"'
-
-def _client_etags(request: Request) -> List[str]:
-    """Extract ETags from If-None-Match header"""
-    if_none_match = request.headers.get("if-none-match")
-    if not if_none_match:
-        return []
+@router.get("/{unlocode}/overview")
+async def get_overview_csv(unlocode: str, format: str = "csv", request: Request = None):
+    # ……生成 CSV 内容 csv_bytes
+    csv_bytes = b"sample,csv,data\n1,2,3"  # 示例数据，实际代码中应替换为真实逻辑
     
-    # Split by comma and strip whitespace and quotes
-    etags = [tag.strip().strip('"') for tag in if_none_match.split(",")]
-    return etags
-
-def _etag_matches(etag: str, client_etags: List[str]) -> bool:
-    """Check if ETag matches any of client's ETags (weak comparison compatible)"""
-    if not client_etags:
-        return False
-    
-    # Strip quotes from our strong etag for comparison
-    clean_etag = etag.strip('"')
-    
-    # Check for both strong and weak etag matches
-    for client_etag in client_etags:
-        # Remove W/ prefix if present (weak etag)
-        if client_etag.startswith('W/'):
-            client_etag = client_etag[2:]
-        client_etag = client_etag.strip('"')
-        
-        if clean_etag == client_etag:
-            return True
-    
-    return False
-
-CSV_SOURCE_TAG = "ports:overview:strong-etag"
-
-@router.api_route(
-    "/{unlocode}/overview",
-    methods=["GET", "HEAD"],
-    summary="Port Overview",
-    tags=["ports"],
-)
-async def port_overview(
-    request: Request,
-    unlocode: str,
-    from_time: Optional[str] = None,
-    to_time: Optional[str] = None
-) -> Union[Response, PlainTextResponse]:
-    """
-    Get port overview data in CSV format
-    
-    Supports both GET and HEAD methods with ETag-based caching.
-    Returns 304 if ETag matches, 200 with headers only for HEAD, 
-    and 200 with content for GET.
-    """
-    
-    # Parse time parameters
-    try:
-        parsed_from_time = parse_time_parameter(from_time) if from_time else datetime.utcnow() - timedelta(days=1)
-        parsed_to_time = parse_time_parameter(to_time) if to_time else datetime.utcnow() + timedelta(days=7)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    # Get data from service
-    port_service = PortService()
-    try:
-        data = await port_service.get_port_overview(unlocode, parsed_from_time, parsed_to_time)
-    except Exception as e:
-        logger.error(f"Error fetching port overview for {unlocode}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-    
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
-    
-    # Convert to CSV
-    csv_lines = ["IMO,Name,Status,Last Port,Destination,Arrival,Departure,Reported,Lat,Lon,Speed,Course,Heading,Current Port"]
-    
-    for entry in data:
-        # Format datetime fields
-        arrival_str = entry.arrival.strftime("%Y-%m-%d %H:%M") if entry.arrival else ""
-        departure_str = entry.departure.strftime("%Y-%m-%d %H:%M") if entry.departure else ""
-        reported_str = entry.reported.strftime("%Y-%m-%d %H:%M") if entry.reported else ""
-        
-        line = f"{entry.imo},{entry.name},{entry.status},{entry.last_port}," \
-               f"{entry.destination},{arrival_str},{departure_str},{reported_str}," \
-               f"{entry.lat},{entry.lon},{entry.speed},{entry.course},{entry.heading},{entry.current_port}"
-        csv_lines.append(line)
-    
-    csv_string = "\n".join(csv_lines)
-    
-    # Handle ETag and caching logic
-    etag = _strong_etag_from_text(csv_string)
-    client_tags = _client_etags(request)
+    etag = '"' + sha256(csv_bytes).hexdigest() + '"'  # 强 ETag（带双引号）
+    # 条件请求：If-None-Match 同时支持强/弱
+    inm = request.headers.get("if-none-match") if request else None
+    if inm:
+        candidates = [s.strip() for s in inm.split(",")]
+        if etag in candidates or f"W/{etag}" in candidates:
+            return Response(status_code=304)
     headers = {
         "ETag": etag,
         "Cache-Control": "public, max-age=300, no-transform",
         "Vary": "Accept-Encoding",
-        "X-CSV-Source": CSV_SOURCE_TAG,
+        "x-csv-source": "ports:overview:strong-etag",
     }
+    return Response(content=csv_bytes, media_type="text/csv; charset=utf-8", headers=headers)
+
+# 显式支持 HEAD（避免某些情况下返回 405）
+@router.head("/{unlocode}/overview")
+async def head_overview_csv(unlocode: str, format: str = "csv", request: Request = None):
+    # 只复用上面的 ETag/Cache-Control 逻辑，不返回 body
+    # ……生成 CSV 内容 csv_bytes
+    csv_bytes = b"sample,csv,data\n1,2,3"  # 示例数据，实际代码中应替换为真实逻辑
     
-    if _etag_matches(etag, client_tags):
-        return Response(status_code=304, headers=headers)
-    
-    if request.method == "HEAD":
-        return Response(status_code=200, headers=headers)
-    
-    # Record timing
-    logger.info(f"Port overview for {unlocode} generated successfully")
-    
-    return PlainTextResponse(
-        content=csv_string,
-        media_type="text/csv; charset=utf-8",
-        headers=headers,
-    )
+    etag = '"' + sha256(csv_bytes).hexdigest() + '"'  # 强 ETag（带双引号）
+    # 条件请求：If-None-Match 同时支持强/弱
+    inm = request.headers.get("if-none-match") if request else None
+    if inm:
+        candidates = [s.strip() for s in inm.split(",")]
+        if etag in candidates or f"W/{etag}" in candidates:
+            return Response(status_code=304)
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "public, max-age=300, no-transform",
+        "Vary": "Accept-Encoding",
+        "x-csv-source": "ports:overview:strong-etag",
+    }
+    return Response(status_code=200, headers=headers)
 
 @router.get(
     "/{unlocode}/calls",

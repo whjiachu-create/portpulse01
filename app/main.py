@@ -1,4 +1,11 @@
 from fastapi import FastAPI
+from app.routers import meta, ports
+
+app = FastAPI()
+
+app.include_router(meta.router, prefix="/v1", tags=["meta"])
+app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+
 
 # Routers
 from app.routers import ports, health
