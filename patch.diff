@@ -1,0 +1,89 @@
+*** Begin Patch
+*** Update File: app/middlewares.py
+@@
+-from __future__ import annotations
+-import time
+-from typing import Callable
+-from fastapi import Request, Response
+-from starlette.middleware.base import BaseHTTPMiddleware
+-import logging
++from __future__ import annotations
++import time, uuid, json
++from typing import Callable
++from fastapi import Request, Response, HTTPException
++from starlette.middleware.base import BaseHTTPMiddleware
++import logging
+ 
+ # 用自定义 logger，避免 uvicorn.access 的特定格式器报错
+ logger = logging.getLogger("app.access")
+ 
+ class AccessLogMiddleware(BaseHTTPMiddleware):
+     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+         response = await call_next(request)
+         return response
+ 
++# === add: RequestId & JsonErrorEnvelope (与 main.py 导入保持一致) ===
++class RequestIdMiddleware(BaseHTTPMiddleware):
++    async def dispatch(self, request: Request, call_next: Callable) -> Response:
++        rid = str(uuid.uuid4())
++        request.state.request_id = rid
++        resp = await call_next(request)
++        resp.headers["X-Request-ID"] = rid
++        return resp
++
++class JsonErrorEnvelopeMiddleware(BaseHTTPMiddleware):
++    async def dispatch(self, request: Request, call_next: Callable) -> Response:
++        try:
++            return await call_next(request)
++        except Exception as exc:
++            status = exc.status_code if isinstance(exc, HTTPException) else 500
++            detail = exc.detail if isinstance(exc, HTTPException) else "Internal Server Error"
++            payload = {
++                "ok": False,
++                "error": {"type": type(exc).__name__, "message": str(detail)},
++                "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
++            }
++            if hasattr(request.state, "request_id"):
++                payload["request_id"] = request.state.request_id
++            return Response(
++                content=json.dumps(payload),
++                status_code=status,
++                media_type="application/json",
++                headers={"Cache-Control": "no-store"},
++            )
++
+ 
+ class DefaultCacheControlMiddleware(BaseHTTPMiddleware):
+     def __init__(self, app, default_policy: str = "public, max-age=300"):
+         super().__init__(app)
+         self.default_policy = default_policy
+@@
+ class ResponseTimeHeaderMiddleware(BaseHTTPMiddleware):
+     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+         start = time.perf_counter()
+         resp = await call_next(request)
+         dur_ms = (time.perf_counter() - start) * 1000.0
+         # 优先写 Server-Timing（代理保留概率更高）
+         if "server-timing" not in {k.lower(): v for k, v in resp.headers.items()}:
+             resp.headers["Server-Timing"] = f"app;dur={dur_ms:.0f}"
+         # 兜底写 X-Response-Time-ms
+         if "x-response-time-ms" not in {k.lower(): v for k, v in resp.headers.items()}:
+             resp.headers["X-Response-Time-ms"] = f"{dur_ms:.0f}"
+         return resp
+*** End Patch
+*** Begin Patch
+*** Update File: app/main.py
+@@
+-    # 中间件顺序：ID → 耗时 → 错误包裹 → 默认缓存 → 访问日志（最后）
+-    app.add_middleware(RequestIdMiddleware)
+-    app.add_middleware(ResponseTimeHeaderMiddleware)
+-    app.add_middleware(JsonErrorEnvelopeMiddleware)
+-    app.add_middleware(AccessLogMiddleware)
+-    app.add_middleware(DefaultCacheControlMiddleware)
++    # 中间件顺序：ID → 耗时 → 错误包裹 → 默认缓存 → 访问日志（最后）
++    app.add_middleware(RequestIdMiddleware)
++    app.add_middleware(ResponseTimeHeaderMiddleware)
++    app.add_middleware(JsonErrorEnvelopeMiddleware)
++    app.add_middleware(DefaultCacheControlMiddleware)
++    app.add_middleware(AccessLogMiddleware)  # 真正最后一层
+*** End Patch

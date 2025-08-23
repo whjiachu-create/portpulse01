@@ -10,7 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from app.middlewares import (
     RequestIdMiddleware,
-    ResponseTimeHeaderMiddleware,  # NEW
+    ResponseTimeHeaderMiddleware,   # 新增
     JsonErrorEnvelopeMiddleware,
     DefaultCacheControlMiddleware,
     AccessLogMiddleware,
@@ -28,11 +28,13 @@ app = FastAPI(title="PortPulse API", version="0.1.0")
 
 # middlewares（先写请求 ID，再写响应时间，确保最外层设置头部）
 app.add_middleware(RequestIdMiddleware)
+# 尽早加时长头，确保被后续中间件保留
 app.add_middleware(ResponseTimeHeaderMiddleware)
-app.add_middleware(JsonErrorEnvelopeMiddleware)
-app.add_middleware(DefaultCacheControlMiddleware)
+# 下面保持原有顺序（可选：AccessLog 放在此处也可以）
 app.add_middleware(AccessLogMiddleware)
+app.add_middleware(JsonErrorEnvelopeMiddleware)
 app.add_middleware(SimpleRateLimitMiddleware, rpm=int(os.getenv("RATE_LIMIT_RPM", "120")))
+app.add_middleware(DefaultCacheControlMiddleware)
 app.add_middleware(CacheHeaderMiddleware)
 
 # 添加兜底缓存控制中间件

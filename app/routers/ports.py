@@ -1,14 +1,16 @@
 # app/routers/ports.py
 from fastapi import APIRouter, Depends, Query, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Set
 from datetime import datetime, date
-from fastapi import Response
-from app.deps import require_api_key, get_conn  # 依赖：鉴权 + asyncpg 连接
-
-# 添加 Request 导入
 from fastapi import Request
+import hashlib
+import time
+CSV_SOURCE_TAG = "ports:overview:strong-etag"  # 用于调试/自检的来源标记
+
+# 导入或定义 get_conn 依赖
+from ..dependencies import require_api_key, get_conn  # 确保 dependencies.py 中已定义并导出 require_api_key 和 get_conn
 
 router = APIRouter(tags=["ports"])
 
@@ -80,6 +82,26 @@ class TrendResponse(BaseModel):
 def _csv_line(values: List[str]) -> str:
     # 简单 CSV（字段都为基础类型 & 无逗号）
     return ",".join(values) + "\n"
+
+def _strong_etag_from_text(csv_text: str) -> str:
+    # 以内容为准，生成稳定强 ETag（无 W/ 前缀，必须有双引号）
+    digest = hashlib.sha256(csv_text.encode("utf-8")).hexdigest()
+    return f'"{digest}"'  # 强标签
+
+def _client_etags(req: Request) -> Set[str]:
+    inm = req.headers.get("if-none-match") or ""
+    parts = [p.strip() for p in inm.split(",") if p.strip()]
+    return set(parts)
+
+def _etag_matches(strong_etag: str, client_tags: Set[str]) -> bool:
+    """弱比较：去掉 W/ 前缀，并容忍去引号的极端情况"""
+    def norm(t: str) -> str:
+        t = t.strip()
+        if t.startswith("W/"):
+            t = t[2:].strip()
+        return t
+    norm_tags = {norm(t) for t in client_tags}
+    return (strong_etag in norm_tags) or (strong_etag.strip('"') in {s.strip('"') for s in norm_tags})
 
 # =========================
 # 端点：Snapshot（永不顶层 null）
@@ -225,18 +247,50 @@ async def port_dwell(
 )
 async def port_overview(
     unlocode: str,
+    request: Request,  # 添加 request 参数以获取 headers
     format: Literal["json", "csv"] = Query("json", description="返回格式"),
     _auth: None = Depends(require_api_key),
     conn=Depends(get_conn),
-    request: Request = None  # 添加 request 参数以获取 headers
 ):
-    
+
     """
     用最新一条 snapshot 作为该港口的概览。
     - JSON：返回 as_of + metrics + source
     - CSV：返回一行标题 + 一行数据
     """
     U = unlocode.upper()
+
+    # 如果是 CSV 格式，先检查缓存（若有）
+    if format == "csv":
+        cache_key = f"overview_csv:{U}"
+        if hasattr(request.app.state, 'cache'):
+            cached_response = request.app.state.cache.get(cache_key)
+            if cached_response:
+                # 始终用内容重新计算强 ETag
+                etag = _strong_etag_from_text(cached_response["content"])
+                client_tags = _client_etags(request)
+                if _etag_matches(etag, client_tags):
+                    return Response(
+                        status_code=304,
+                        headers={
+                            "ETag": etag,
+                            "Cache-Control": "public, max-age=300, no-transform",
+                            "Vary": "Accept-Encoding",
+                            "X-CSV-Source": CSV_SOURCE_TAG,
+                        },
+                    )
+                return PlainTextResponse(
+                    content=cached_response["content"],
+                    media_type="text/csv; charset=utf-8",
+                    headers={
+                        "ETag": etag,
+                        "Cache-Control": "public, max-age=300, no-transform",
+                        "Vary": "Accept-Encoding",
+                        "X-CSV-Source": CSV_SOURCE_TAG,
+                    },
+                )
+
+    start_time = time.time()
     row = await conn.fetchrow(
         """
         SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score, src, src_loaded_at
@@ -249,7 +303,6 @@ async def port_overview(
     )
 
     if format == "csv":
-        import hashlib
         header = _csv_line(["unlocode", "as_of", "vessels", "avg_wait_hours", "congestion_score"])
         if not row:
             body = _csv_line([U, "", "", "", ""])
@@ -262,31 +315,53 @@ async def port_overview(
                 f"{float(row['congestion_score']):.1f}",
             ])
         csv_string = header + body
-        etag = hashlib.sha256(csv_string.encode("utf-8")).hexdigest()[:16]
-        
-        # 检查 If-None-Match 头（兼容大小写）
-        if_none_match = None
-        for key, value in request.headers.items():
-            if key.lower() == "if-none-match":
-                if_none_match = value
-                break
-        
-        # 去掉引号后对比
-        if if_none_match:
-            if if_none_match.startswith('"') and if_none_match.endswith('"'):
-                if_none_match = if_none_match[1:-1]
-            if if_none_match == etag:
-                return Response(status_code=304, headers={
-                    "ETag": f'"{etag}"',
-                    "Cache-Control": "public, max-age=300"
-                })
-        
+
+        # 生成强 ETag，并检查 If-None-Match（兼容弱标签 W/"..."）
+        etag = _strong_etag_from_text(csv_string)
+        client_tags = _client_etags(request)
+        if _etag_matches(etag, client_tags):
+            return Response(
+                status_code=304,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": "public, max-age=300, no-transform",
+                    "Vary": "Accept-Encoding",
+                    "X-CSV-Source": CSV_SOURCE_TAG,
+                }
+            )
+
+        # 记录耗时
+        process_time = time.time() - start_time
+        print(f"CSV generation for {U} took {process_time*1000:.2f}ms")
+
+        # 如果处理时间超过800ms，则缓存结果60秒
+        if process_time > 0.8:
+            if not hasattr(request.app.state, 'cache'):
+                request.app.state.cache = {}
+
+            # 设置缓存，60秒过期
+            request.app.state.cache[f"overview_csv:{U}"] = {
+                "content": csv_string,
+                "etag": etag,
+                "timestamp": time.time()
+            }
+
+            # 清理过期缓存（可选）
+            expired_keys = []
+            for key, value in request.app.state.cache.items():
+                if time.time() - value["timestamp"] > 60:
+                    expired_keys.append(key)
+            for key in expired_keys:
+                del request.app.state.cache[key]
+
         return PlainTextResponse(
             content=csv_string,
             media_type="text/csv; charset=utf-8",
             headers={
-                "ETag": f'"{etag}"',
-                "Cache-Control": "public, max-age=300"
+                "ETag": etag,
+                "Cache-Control": "public, max-age=300, no-transform",
+                "Vary": "Accept-Encoding",
+                "X-CSV-Source": CSV_SOURCE_TAG,
             }
         )
 
@@ -309,6 +384,64 @@ async def port_overview(
         ),
     )
     return response
+
+async def get_port_overview_csv(unlocode: str, request: Request, conn=Depends(get_conn)):
+    """
+    用最新一条 snapshot 作为该港口的概览。
+    - CSV：返回一行标题 + 一行数据
+    """
+    U = unlocode.upper()
+    row = await conn.fetchrow(
+        """
+        SELECT snapshot_ts, vessels, avg_wait_hours, congestion_score, src, src_loaded_at
+        FROM port_snapshots
+        WHERE unlocode = $1
+        ORDER BY snapshot_ts DESC
+        LIMIT 1
+        """,
+        U,
+    )
+
+    if not row:
+        csv_text = _csv_line(["unlocode", "as_of", "vessels", "avg_wait_hours", "congestion_score"]) + _csv_line([U, "", "", "", ""])
+    else:
+        csv_text = _csv_line(["unlocode", "as_of", "vessels", "avg_wait_hours", "congestion_score"]) + _csv_line([
+            U,
+            row["snapshot_ts"].isoformat(),
+            str(int(row["vessels"])),
+            f"{float(row['avg_wait_hours']):.2f}",
+            f"{float(row['congestion_score']):.1f}",
+        ])
+
+    # 生成强 ETag（带双引号）
+    etag = '"' + hashlib.sha256(csv_text.encode("utf-8")).hexdigest() + '"'
+
+    # 客户端条件请求
+    if_none_match = request.headers.get("if-none-match")  # 可能为多值，用逗号分隔
+    if if_none_match:
+        client_tags = [t.strip() for t in if_none_match.split(",")]
+        if etag in client_tags:
+            return Response(
+                status_code=304,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": "public, max-age=300, no-transform",
+                    "Vary": "Accept-Encoding",
+                    "X-CSV-Source": CSV_SOURCE_TAG,
+                },
+            )
+
+    # 首次或内容已变化 → 200，附带强 ETag
+    return PlainTextResponse(
+        csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "ETag": etag,
+            "Cache-Control": "public, max-age=300, no-transform",
+            "Vary": "Accept-Encoding",
+            "X-CSV-Source": CSV_SOURCE_TAG,
+        },
+    )
 
 # =========================
 # 端点：Alerts（基于 dwell 的窗口对比）
@@ -348,7 +481,7 @@ async def port_alerts(
     _auth: None = Depends(require_api_key),
     conn=Depends(get_conn),
 ):
-    
+
     """
     简化实现：把 window 解析为天数 N，取最近 N 天 dwell：
     - baseline = 前半窗口均值
