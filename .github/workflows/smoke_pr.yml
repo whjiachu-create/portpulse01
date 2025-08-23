@@ -1,0 +1,28 @@
+name: PR Smoke (local uvicorn)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Run PR smoke
+        env:
+          BASE: "http://127.0.0.1:8080"
+          UNLOCODE: "USLAX"
+          API_HEADER: "X-API-Key: dev_key_123"
+        run: bash scripts/smoke_pr.sh
