@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 from fastapi import APIRouter, Request, Response
 from hashlib import sha256
 from typing import TYPE_CHECKING
@@ -18,46 +18,53 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
-@router.get("/{unlocode}/overview", response_model=_PortOverview)
-async def get_overview_csv(unlocode: str, format: str = "csv", request: Request = None):
-    # ……生成 CSV 内容 csv_bytes
-    csv_bytes = b"sample,csv,data\n1,2,3"  # 示例数据，实际代码中应替换为真实逻辑
+def _build_overview_csv_and_headers(unlocode: str) -> Tuple[str, dict]:
+    """
+    构建港口概览CSV内容和响应头
+    返回: (csv_text, headers)
+    """
+    # ……生成 CSV 内容 csv_text
+    csv_text = "sample,csv,data\n1,2,3"  # 示例数据，实际代码中应替换为真实逻辑
     
-    etag = '"' + sha256(csv_bytes).hexdigest() + '"'  # 强 ETag（带双引号）
-    # 条件请求：If-None-Match 同时支持强/弱
-    inm = request.headers.get("if-none-match") if request else None
-    if inm:
-        candidates = [s.strip() for s in inm.split(",")]
-        if etag in candidates or f"W/{etag}" in candidates:
-            return Response(status_code=304)
+    etag = '"' + sha256(csv_text.encode()).hexdigest() + '"'  # 强 ETag（带双引号）
     headers = {
         "ETag": etag,
         "Cache-Control": "public, max-age=300, no-transform",
         "Vary": "Accept-Encoding",
         "x-csv-source": "ports:overview:strong-etag",
     }
-    return Response(content=csv_bytes, media_type="text/csv; charset=utf-8", headers=headers)
+    return csv_text, headers
+
+@router.get("/{unlocode}/overview", response_model=_PortOverview)
+async def get_overview_csv(unlocode: str, format: str = "csv", request: Request = None):
+    csv_text, headers = _build_overview_csv_and_headers(unlocode)
+    
+    # 条件请求：If-None-Match 同时支持强/弱
+    inm = request.headers.get("if-none-match") if request else None
+    if inm:
+        candidates = [s.strip() for s in inm.split(",")]
+        if headers["ETag"] in candidates or f"W/{headers['ETag']}" in candidates:
+            return Response(status_code=304, headers=headers)
+            
+    return Response(
+        content=csv_text.encode(), 
+        media_type="text/csv; charset=utf-8", 
+        headers=headers
+    )
 
 # 显式支持 HEAD（避免某些情况下返回 405）
 @router.head("/{unlocode}/overview")
 async def head_overview_csv(unlocode: str, format: str = "csv", request: Request = None):
     # 只复用上面的 ETag/Cache-Control 逻辑，不返回 body
-    # ……生成 CSV 内容 csv_bytes
-    csv_bytes = b"sample,csv,data\n1,2,3"  # 示例数据，实际代码中应替换为真实逻辑
+    csv_text, headers = _build_overview_csv_and_headers(unlocode)
     
-    etag = '"' + sha256(csv_bytes).hexdigest() + '"'  # 强 ETag（带双引号）
     # 条件请求：If-None-Match 同时支持强/弱
     inm = request.headers.get("if-none-match") if request else None
     if inm:
         candidates = [s.strip() for s in inm.split(",")]
-        if etag in candidates or f"W/{etag}" in candidates:
-            return Response(status_code=304)
-    headers = {
-        "ETag": etag,
-        "Cache-Control": "public, max-age=300, no-transform",
-        "Vary": "Accept-Encoding",
-        "x-csv-source": "ports:overview:strong-etag",
-    }
+        if headers["ETag"] in candidates or f"W/{headers['ETag']}" in candidates:
+            return Response(status_code=304, headers=headers)
+            
     return Response(status_code=200, headers=headers)
 
 @router.get(
