@@ -2,7 +2,10 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union
 from fastapi import APIRouter, Request, Response
 from hashlib import sha256
-from app.models import PortOverview, PortCallExpanded, PortCallProcessed
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models import PortCallExpanded, PortCallProcessed
 
 router = APIRouter()
 

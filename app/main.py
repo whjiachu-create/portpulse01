@@ -1,15 +1,13 @@
 from fastapi import FastAPI
-from app.routers import meta, ports
+# Delete:from app.routers import meta, ports
 
-app = FastAPI()
+# Delete:app = FastAPI()
 
-app.include_router(meta.router, prefix="/v1", tags=["meta"])
-app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+# Delete:app.include_router(meta.router, prefix="/v1", tags=["meta"])
+# Delete:app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
 
-
-# Routers
-from app.routers import ports, health
-
+# Delete:# Routers
+# Delete:from app.routers import ports, health
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -28,7 +26,8 @@ def create_app() -> FastAPI:
     )
 
     # Include routers
-    app.include_router(health.router, prefix="/health", tags=["health"])
+    from app.routers import meta, ports
+    app.include_router(meta.router, prefix="/v1", tags=["meta"])
     app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
 
     # Middleware order: ID → Timing → Error envelope → Access log → Default cache
