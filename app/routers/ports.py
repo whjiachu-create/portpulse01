@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Tuple
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, HTTPException
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
@@ -103,29 +103,26 @@ async def port_calls(
         logger.error(f"Error fetching port calls for {unlocode}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
     
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
-    
-    # Convert to response model
-    result = [
-        _PortCallExpanded(
-            imo=entry.imo,
-            name=entry.name,
-            status=entry.status,
-            last_port=entry.last_port,
-            destination=entry.destination,
-            arrival=entry.arrival,
-            departure=entry.departure,
-            reported=entry.reported,
-            lat=entry.lat,
-            lon=entry.lon,
-            speed=entry.speed,
-            course=entry.course,
-            heading=entry.heading,
-            current_port=entry.current_port
-        )
-        for entry in data
-    ]
+    if data:
+        result = [
+            _PortCallExpanded(
+                call_id=entry.call_id,
+                unlocode=entry.unlocode,
+                vessel_name=entry.vessel_name,
+                imo=entry.imo,
+                mmsi=entry.mmsi,
+                status=entry.status,
+                eta=entry.eta,
+                etd=entry.etd,
+                ata=entry.ata,
+                atb=entry.atb,
+                atd=entry.atd,
+                berth=entry.berth,
+                terminal=entry.terminal,
+                last_updated_at=entry.last_updated_at
+            )
+            for entry in data
+        ]
     
     # Apply sorting
     if sort:
@@ -174,41 +171,45 @@ async def processed_port_calls(
         logger.error(f"Error fetching processed port calls for {unlocode}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
     
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Port with UNLOCODE {unlocode} not found")
-    
     # Process data
     result = []
-    for i, entry in enumerate(data):
-        # Calculate time in port
-        time_in_port = None
-        if entry.arrival and entry.departure:
-            time_in_port = (entry.departure - entry.arrival).total_seconds() / 3600  # in hours
-        
-        # Determine next port
-        next_port = None
-        if i < len(data) - 1:
-            next_port = data[i + 1].destination
-        
-        processed_entry = _PortCallProcessed(
-            imo=entry.imo,
-            name=entry.name,
-            status=entry.status,
-            last_port=entry.last_port,
-            destination=entry.destination,
-            arrival=entry.arrival,
-            departure=entry.departure,
-            reported=entry.reported,
-            lat=entry.lat,
-            lon=entry.lon,
-            speed=entry.speed,
-            course=entry.course,
-            heading=entry.heading,
-            current_port=entry.current_port,
-            time_in_port=time_in_port,
-            next_port=next_port
-        )
-        result.append(processed_entry)
+    
+    if data:
+        for entry in data:
+            # Calculate service time (berth to departure)
+            service_time = None
+            if entry.atb and entry.atd:
+                service_time = (entry.atd - entry.atb).total_seconds() / 3600  # in hours
+            
+            # Calculate turnaround time (arrival to departure)
+            turnaround_time = None
+            if entry.ata and entry.atd:
+                turnaround_time = (entry.atd - entry.ata).total_seconds() / 3600  # in hours
+            
+            # Determine phase
+            phase = None
+            if entry.ata and not entry.atb:
+                phase = "waiting"
+            elif entry.atb and not entry.atd:
+                phase = "berthing"
+            elif entry.atd:
+                phase = "turnaround"
+            
+            # Calculate wait hours (anchor to berth)
+            wait_hours = None
+            if entry.ata and entry.atb:
+                wait_hours = (entry.atb - entry.ata).total_seconds() / 3600  # in hours
+            
+            processed_entry = _PortCallProcessed(
+                call_id=entry.call_id,
+                unlocode=entry.unlocode,
+                phase=phase,
+                wait_hours=wait_hours,
+                service_time_hours=service_time,
+                turnaround_hours=turnaround_time,
+                updated_at=entry.last_updated_at
+            )
+            result.append(processed_entry)
     
     # Apply sorting
     if sort:
