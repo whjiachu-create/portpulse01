@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 from typing import AsyncIterator
 from fastapi import Depends, HTTPException, Request
-from .services.deps import get_db_pool  # 唯一来源，避免循环
+from .services.deps import get_db_pool
 
 __all__ = ["get_db_pool", "get_conn", "require_api_key"]
 
