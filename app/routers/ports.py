@@ -36,7 +36,18 @@ def _etag_matches(etag: str, client_etags: List[str]) -> bool:
     
     # Strip quotes from our strong etag for comparison
     clean_etag = etag.strip('"')
-    return clean_etag in client_etags
+    
+    # Check for both strong and weak etag matches
+    for client_etag in client_etags:
+        # Remove W/ prefix if present (weak etag)
+        if client_etag.startswith('W/'):
+            client_etag = client_etag[2:]
+        client_etag = client_etag.strip('"')
+        
+        if clean_etag == client_etag:
+            return True
+    
+    return False
 
 CSV_SOURCE_TAG = "ports:overview:strong-etag"
 
