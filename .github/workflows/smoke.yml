@@ -1,113 +1,26 @@
-name: Smoke Test
+name: PR Smoke (local uvicorn)
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
-  smoke-test:
+  smoke:
     runs-on: ubuntu-latest
-    env:
-      PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
-      PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
-      PORTPULSE_PORT_OVERVIEW: ${{ secrets.PORTPULSE_PORT_OVERVIEW }}
-      PORTPULSE_PORT_ALERTS: ${{ secrets.PORTPULSE_PORT_ALERTS }}
-      PORTPULSE_ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    timeout-minutes: 15
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install dependencies
+          cache: 'pip'
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install httpx
-
-      - name: Run API selfcheck (retry once)
+          pip install -r requirements.txt
+      - name: Run PR smoke
         env:
-          BASE_URL: ${{ env.PORTPULSE_BASE_URL }}
-          API_KEY: ${{ env.PORTPULSE_API_KEY }}
-        run: |
-          set -o pipefail
-          for attempt in 1 2; do
-            if timeout 30s bash scripts/selfcheck.sh 2>&1 | tee selfcheck.out; then
-              echo "Selfcheck passed on attempt $attempt"
-              exit 0
-            else
-              echo "Selfcheck failed on attempt $attempt"
-              if [ $attempt -eq 2 ]; then
-                echo "Both attempts failed"
-                exit 1
-              else
-                sleep 5
-              fi
-            fi
-          done
-
-      - name: Upload selfcheck.out artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: selfcheck-output
-          path: selfcheck.out
-
-      - name: Slack notification
-        if: always() && env.SLACK_WEBHOOK_URL != ''
-        run: |
-          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo GREEN || echo RED)
-          TITLE="PortPulse selfcheck (CI)" LOG_FILE=selfcheck.out \
-            SLACK_WEBHOOK_URL="$SLACK_WEBHOOK_URL" \
-            bash scripts/notify_ops.sh
-
-      - name: Run smoke test
-        env:
-          PORTPULSE_BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
-          PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
-          PORTPULSE_PORT_OVERVIEW: ${{ secrets.PORTPULSE_PORT_OVERVIEW }}
-          PORTPULSE_PORT_ALERTS: ${{ secrets.PORTPULSE_PORT_ALERTS }}
-          PORTPULSE_ALERT_WINDOW: ${{ secrets.PORTPULSE_ALERT_WINDOW }}
-        run: |
-          set -euo pipefail
-          cat > smoke.py <<'PY'
-          import os, time, httpx
-
-          BASE_URL = os.getenv("PORTPULSE_BASE_URL","").rstrip("/")
-          API_KEY  = os.getenv("PORTPULSE_API_KEY","")
-          P_OVY    = os.getenv("PORTPULSE_PORT_OVERVIEW","USLAX")
-          P_ALR    = os.getenv("PORTPULSE_PORT_ALERTS","USNYC")
-          WND      = os.getenv("PORTPULSE_ALERT_WINDOW","14d")
-
-          H = {"X-API-Key": API_KEY, "Accept": "application/json"}
-
-          def GET(path, **params):
-              url = f"{BASE_URL}{path}"
-              r = httpx.get(url, headers=H, params=params, timeout=15)
-              r.raise_for_status()
-              print(f"{path} -> {r.status_code}")
-
-          for i in range(2):
-              try:
-                  GET("/v1/health")
-                  GET("/v1/sources")
-                  GET(f"/v1/ports/{P_OVY}/snapshot")
-                  GET(f"/v1/ports/{P_OVY}/dwell", days=14)
-                  GET(f"/v1/ports/{P_OVY}/overview")
-                  GET(f"/v1/ports/{P_ALR}/alerts", window=WND)
-                  GET(f"/v1/ports/{P_OVY}/trend")
-                  break
-              except Exception as e:
-                  print("retrying after error:", e)
-                  if i == 1: raise
-                  time.sleep(5)
-          PY
-          python smoke.py
+          BASE: "http://127.0.0.1:8080"
+          UNLOCODE: "USLAX"
+          API_HEADER: "X-API-Key: dev_key_123"
+        run: bash scripts/smoke_pr.sh
