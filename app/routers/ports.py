@@ -4,23 +4,21 @@ from fastapi import APIRouter, Request, Response
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-try:
-    from app.models import (
-        PortOverview as _PortOverview,
-        PortCallExpanded as _PortCallExpanded,
-        PortCallProcessed as _PortCallProcessed,
-    )
-except Exception:
-    _PortOverview = dict
-    _PortCallExpanded = dict
-    _PortCallProcessed = dict
+# 修改导入语句，使用新创建的schemas而不是models
+from app.schemas import (
+    PortOverview as _PortOverview,
+    PortCallExpanded as _PortCallExpanded,
+    PortCallProcessed as _PortCallProcessed,
+)
+
+# 删除原有的异常处理导入
 
 if TYPE_CHECKING:
-    from app.models import PortOverview, PortCallExpanded, PortCallProcessed
+    from app.schemas import PortOverview, PortCallExpanded, PortCallProcessed
 
 router = APIRouter()
 
-@router.get("/{unlocode}/overview")
+@router.get("/{unlocode}/overview", response_model=_PortOverview)
 async def get_overview_csv(unlocode: str, format: str = "csv", request: Request = None):
     # ……生成 CSV 内容 csv_bytes
     csv_bytes = b"sample,csv,data\n1,2,3"  # 示例数据，实际代码中应替换为真实逻辑
@@ -103,7 +101,7 @@ async def port_calls(
     
     # Convert to response model
     result = [
-        PortCallExpanded(
+        _PortCallExpanded(
             imo=entry.imo,
             name=entry.name,
             status=entry.status,
@@ -185,7 +183,7 @@ async def processed_port_calls(
         if i < len(data) - 1:
             next_port = data[i + 1].destination
         
-        processed_entry = PortCallProcessed(
+        processed_entry = _PortCallProcessed(
             imo=entry.imo,
             name=entry.name,
             status=entry.status,
