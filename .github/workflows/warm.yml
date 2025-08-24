@@ -1,4 +1,5 @@
 name: Warm Cache
+
 on:
   schedule:
     - cron: "*/15 * * * *"   # 每 15 分钟
@@ -8,22 +9,48 @@ jobs:
   warm:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}   # 例如 https://api.useportpulse.com
+      API_KEY:  ${{ secrets.PORTPULSE_API_KEY }}    # 生产 key
+      UNLOCODE: USLAX
     steps:
-      - name: Hit hot endpoints
-        env:
-          API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
-          BASE_URL: ${{ secrets.PORTPULSE_BASE_URL }}
+      - name: Hit hot endpoints (prod-only)
         run: |
-          set -e
-          curl -fsS -H "Accept: application/json" "$BASE_URL/v1/health" >/dev/null
-          curl -fsS -H "Accept: application/json" "$BASE_URL/v1/sources" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/snapshot" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/dwell?days=14" >/dev/null
-          curl -fsS -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/overview?format=csv" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USNYC/alerts?window=14d" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" >/dev/null
+          set -euo pipefail
+          j() { curl -fsS -D - -o /dev/null -H "Accept: application/json" "$1" | sed -n '1p'; }
+          k() { curl -fsS -D - -o /dev/null -H "X-API-Key: $API_KEY" "$1" | sed -n '1p'; }
+
+          echo "== health =="
+          j "$BASE_URL/v1/health" | grep -q "200"   # 必须 200
+
+          # meta：当前 prod 暴露的是 /v1/meta/dependencies（可选，失败不致命）
+          echo "== meta/dependencies (optional) =="
+          curl -fsS -D - -o /dev/null "$BASE_URL/v1/meta/dependencies" | sed -n '1p' || true
+
+          # overview CSV：核心预热（GET + HEAD + 304）
+          echo "== overview csv (GET/HEAD/304) =="
+          CSV="$BASE_URL/v1/ports/$UNLOCODE/overview?format=csv"
+          # HEAD（必须 200）
+          curl -fsSI -H "X-API-Key: $API_KEY" "$CSV" | sed -n '1,10p' | grep -q "200"
+          # GET（必须 200）
+          k "$CSV" | grep -q "200"
+
+          # If-None-Match 条件命中（可选，不作为失败条件）
+          ETAG=$(curl -fsSI -H "X-API-Key: $API_KEY" "$CSV" | awk 'BEGIN{IGNORECASE=1}/^etag:/{gsub(/\r/,"");print $2}')
+          if [ -n "$ETAG" ]; then
+            echo "-- If-None-Match (optional) --"
+            curl -fsS -D - -o /dev/null -H "X-API-Key: $API_KEY" -H "If-None-Match: $ETAG" "$CSV" | sed -n '1p' || true
+          fi
+
+          # 未来 readouts 端点上线后，下面这些“可选命中”会自动生效（不存在则跳过）
+          echo "== optional readouts =="
+          for P in "/v1/meta/sources" \
+                   "/v1/ports/$UNLOCODE/snapshot" \
+                   "/v1/ports/$UNLOCODE/dwell?days=14" \
+                   "/v1/ports/$UNLOCODE/trend?days=14&fields=vessels,avg_wait_hours&limit=30&offset=0"
+          do
+            echo "-- try $P"
+            curl -fsS -D - -o /dev/null -H "X-API-Key: $API_KEY" "$BASE_URL$P" | sed -n '1p' || true
+          done
+
+          echo "Warm cache done."
