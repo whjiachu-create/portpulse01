@@ -8,7 +8,7 @@ router = APIRouter(tags=["meta"])
 async def list_sources(response: Response) -> SourcesResponse:
     response.headers["Cache-Control"] = "public, max-age=300, no-transform"
     items = [
-        SourceItem(name="AIS_A", description="Primary AIS aggregate", license="CC-BY", source_type="AIS"),
-        SourceItem(name="PORT_BULLETIN", description="Port authority bulletins"),
+        SourceItem(id="ais_a", name="AIS Provider A", license="CC-BY"),
+        SourceItem(id="port_bulletin", name="Port Bulletin"),
     ]
     return SourcesResponse(sources=items, as_of=datetime.now(timezone.utc))

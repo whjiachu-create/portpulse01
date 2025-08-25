@@ -16,7 +16,7 @@ def create_app() -> FastAPI:
     # 中间件：RequestId / ResponseTime / JsonErrorEnvelope / AccessLog / DefaultCacheControl（若有）
     from app.routers import meta, ports
     app.include_router(meta.router,  prefix="/v1",       tags=["meta"])
-    app.include_router(ports.router, tags=["ports"])
+    app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exc_handler(request: Request, exc: StarletteHTTPException):

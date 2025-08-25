@@ -3,6 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 class SourceItem(BaseModel):
+    id: Optional[str] = None
     name: str
     description: Optional[str] = None
     license: Optional[str] = None
