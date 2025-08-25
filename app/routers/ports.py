@@ -11,7 +11,7 @@ from app.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()  # 在 main.py 挂到 /v1/ports
+router = APIRouter(tags=["ports"])
 
 # ===== Overview（CSV 强 ETag + 304 + HEAD）=====
 def _overview_csv(unlocode: str) -> str:
