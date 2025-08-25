@@ -19,3 +19,14 @@ def create_app() -> FastAPI:
     app.include_router(alerts.router, prefix="/v1",       tags=["alerts"])
     return app
 app = create_app()
+from fastapi.responses import RedirectResponse
+from datetime import datetime, timezone
+
+@app.get("/", include_in_schema=False)
+async def root():
+    # 打开根域名时，直接去 Swagger 文档
+    return RedirectResponse(url="/docs", status_code=307)
+
+@app.get("/v1/health", tags=["meta"])
+async def health():
+    return {"status": "ok", "as_of": datetime.now(timezone.utc).isoformat()}
