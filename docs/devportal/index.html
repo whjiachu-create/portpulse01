@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <title>PortPulse API (P1)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <style>
+      body { margin:0; padding:0; font-family: ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial; }
+      .topbar { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; background:#0B3D91; color:#fff; }
+      .topbar a { color:#fff; text-decoration:underline; }
+      .topbar .right a { margin-left:16px; }
+      .note { padding:10px 16px; background:#F5F7FF; border-bottom:1px solid #E5E7EB; font-size:14px; }
+      .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace; }
+    </style>
+    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+  </head>
+  <body>
+    <div class="topbar">
+      <div><strong>PortPulse Public Beta (P1)</strong></div>
+      <div class="right">
+        <a href="/devportal/postman.collection.json" download>Download Postman Collection</a>
+        <a href="/openapi.json" target="_blank" rel="noreferrer">openapi.json</a>
+      </div>
+    </div>
+    <div class="note">
+      Base URL: <span class="mono">https://api.useportpulse.com</span> ·
+      If you need an API key header, use <span class="mono">X-API-Key: dev_key_123</span>.
+    </div>
+    <redoc
+      spec-url="/openapi.json"
+      hide-download-button
+      expand-responses="200,201"
+      theme='{
+        "colors": { "primary": { "main": "#0B3D91" } },
+        "typography": { "fontSize":"14px", "headings":{"fontWeight":"600"} },
+        "sidebar": { "backgroundColor":"#0B3D91", "textColor":"#ffffff" }
+      }'
+    ></redoc>
+  </body>
+</html>

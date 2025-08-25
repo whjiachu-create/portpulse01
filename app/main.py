@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from typing import Optional
@@ -30,3 +31,12 @@ async def root():
 @app.get("/v1/health", tags=["meta"])
 async def health():
     return {"status": "ok", "as_of": datetime.now(timezone.utc).isoformat()}
+
+
+# ---- DevPortal: Redoc + Postman (static) ----
+try:
+    import os
+    if os.path.isdir("docs/devportal"):
+        app.mount("/devportal", StaticFiles(directory="docs/devportal", html=True), name="devportal")
+except Exception:
+    pass

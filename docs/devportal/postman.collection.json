@@ -1,0 +1,131 @@
+{
+  "info": {
+    "name": "PortPulse P1 API",
+    "_postman_id": "3f8c6a3e-5b7d-4a40-9f1b-pp-p1",
+    "description": "Public Beta (P1) — /v1/sources, /v1/hs/{code}/imports, /v1/ports/{unlocode}/alerts",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.useportpulse.com" },
+    { "key": "apiKey",  "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Meta",
+      "item": [
+        {
+          "name": "GET /v1/sources",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{apiKey}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/sources",
+              "host": ["{{baseUrl}}"], "path": ["v1","sources"]
+            }
+          }
+        },
+        {
+          "name": "HEAD /v1/sources",
+          "request": {
+            "method": "HEAD",
+            "header": [
+              { "key": "X-API-Key", "value": "{{apiKey}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/sources",
+              "host": ["{{baseUrl}}"], "path": ["v1","sources"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "HS Imports",
+      "item": [
+        {
+          "name": "GET /v1/hs/{code}/imports (JSON)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{apiKey}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/hs/8401/imports?frm=CN&to=US&months=6",
+              "host": ["{{baseUrl}}"], "path": ["v1","hs","8401","imports"],
+              "query": [
+                {"key": "frm", "value": "CN"},
+                {"key": "to", "value": "US"},
+                {"key": "months", "value": "6"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "HEAD /v1/hs/{code}/imports (CSV)",
+          "request": {
+            "method": "HEAD",
+            "header": [
+              { "key": "X-API-Key", "value": "{{apiKey}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/hs/8401/imports?frm=CN&to=US&months=6&format=csv",
+              "host": ["{{baseUrl}}"], "path": ["v1","hs","8401","imports"],
+              "query": [
+                {"key": "frm", "value": "CN"},
+                {"key": "to", "value": "US"},
+                {"key": "months", "value": "6"},
+                {"key": "format", "value": "csv"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /v1/hs/{code}/imports (CSV)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/csv" },
+              { "key": "X-API-Key", "value": "{{apiKey}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/hs/8401/imports?frm=CN&to=US&months=6&format=csv",
+              "host": ["{{baseUrl}}"], "path": ["v1","hs","8401","imports"],
+              "query": [
+                {"key": "frm", "value": "CN"},
+                {"key": "to", "value": "US"},
+                {"key": "months", "value": "6"},
+                {"key": "format", "value": "csv"}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Alerts",
+      "item": [
+        {
+          "name": "GET /v1/ports/{unlocode}/alerts",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{apiKey}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/ports/USLAX/alerts?window=14",
+              "host": ["{{baseUrl}}"], "path": ["v1","ports","USLAX","alerts"],
+              "query": [
+                {"key": "window", "value": "14"}
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
