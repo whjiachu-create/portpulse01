@@ -1,80 +1,59 @@
-from app.deps import get_conn
-from fastapi import APIRouter, Depends,  Query
-from asyncpg.connection import Connection
-from datetime import date, datetime
-from app.deps import get_conn
-from fastapi import APIRouter, HTTPException, Depends   # ← 加上 Depends
-from app.deps import get_conn, require_api_key          # ← 新增这一行
+from fastapi import APIRouter, Query, Response, Request
+from datetime import datetime, timedelta
+from hashlib import sha256
 
-router = APIRouter()
+router = APIRouter(tags=["hs"])
 
-def _parse_month_1st(s: str) -> date:
-    # 期望 YYYY-MM-01；如果传 YYYY-MM 也自动补 -01
-    if len(s) == 7:  # YYYY-MM
-        s = s + "-01"
-    try:
-        d = date.fromisoformat(s)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid date; expected YYYY-MM-01")
-    if d.day != 1:
-        raise HTTPException(status_code=400, detail="Date must be the first day of month (YYYY-MM-01)")
-    return d
+def _build_points(code: str, frm: str, to: str, months: int):
+    # 伪数据（可重复、稳定）：按 (code,frm,to) 构造一个简单序列
+    base = abs(hash((code, frm, to))) % 5000 + 10000
+    today = datetime.utcnow().date().replace(day=1)
+    pts = []
+    for i in range(months, 0, -1):
+        month = (today.replace(day=1) - timedelta(days=30*i)).replace(day=1)
+        # 简单波动：避免随机
+        val = base + (i * 37) % 1200
+        pts.append({"month": month.isoformat(), "value": int(val), "src": "demo"})
+    return pts
 
-def _default_range_last_months(months: int = 6) -> tuple[date, date]:
-    today = date.today().replace(day=1)
-    # 简单以 30 天回退近似计算月初
-    start = (datetime(today.year, today.month, 1) - (months * 30))  # type: ignore
-    # 更稳妥地计算起始月份：
-    y = today.year
-    m = today.month - months
-    while m <= 0:
-        y -= 1
-        m += 12
-    start = date(y, m, 1)
-    return (start, today)
-
-@router.get("/{code}/imports", summary="Hs Imports", tags=["trade"])
+@router.get("/{code}/imports", summary="HS imports (demo)")
 async def hs_imports(
     code: str,
-    country: str = Query(..., description="Country code"),
-    frm: str = Query(...),
-    to: str = Query(...),
-    _auth: None = Depends(require_api_key),
-    conn=Depends(get_conn)
+    frm: str = Query(..., min_length=2, max_length=3, description="Origin ISO-2/3"),
+    to:  str = Query(..., min_length=2, max_length=3, description="Destination ISO-2/3"),
+    months: int = Query(6, ge=1, le=36),
+    format: str = Query("json", pattern="^(json|csv)$"),
+    request: Request = None,
 ):
-    """
-    在 hs_imports 上按 code/country/period 过滤，按 period 升序返回。
-    """
-    if frm and to:
-        frm_d = _parse_month_1st(frm)
-        to_d  = _parse_month_1st(to)
-        if frm_d > to_d:
-            raise HTTPException(status_code=400, detail="frm must be <= to")
-    else:
-        frm_d, to_d = _default_range_last_months(6)
+    points = _build_points(code, frm, to, months)
 
-    rows = await conn.fetch("""
-        SELECT period, value, origin, src, src_loaded_at
-        FROM hs_imports
-        WHERE code = $1
-          AND country = $2
-          AND period >= $3 AND period <= $4
-        ORDER BY period ASC;
-    """, code, country.upper(), frm_d, to_d)
-
-    return {
-        "code": code,
-        "country": country.upper(),
-        "frm": frm_d.isoformat(),
-        "to": to_d.isoformat(),
-        "items": [
-            {
-                "period": r["period"].isoformat(),
-                "value": float(r["value"]) if r["value"] is not None else None,
-                "origin": r["origin"],
-                "src": r["src"],
-                "src_loaded_at": r["src_loaded_at"].isoformat() if r["src_loaded_at"] else None,
+    if format == "csv":
+        rows = ["month,value,src"] + [f'{p["month"]},{p["value"]},{p["src"]}' for p in points]
+        csv_text = "\n".join(rows) + "\n"
+        etag = '"' + sha256(csv_text.encode("utf-8")).hexdigest() + '"'
+        # 条件请求
+        inm = request.headers.get("if-none-match") if request else None
+        if inm:
+            cands = [s.strip() for s in inm.split(",")]
+            if etag in cands or f"W/{etag}" in cands:
+                return Response(status_code=304, headers={
+                    "ETag": etag,
+                    "Cache-Control": "public, max-age=300, no-transform",
+                    "Vary": "Accept-Encoding",
+                })
+        return Response(
+            content=csv_text.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "public, max-age=300, no-transform",
+                "Vary": "Accept-Encoding",
             }
-            for r in rows
-        ]
+        )
+
+    # JSON
+    return {
+        "code": code, "frm": frm, "to": to,
+        "as_of": datetime.utcnow().isoformat() + "Z",
+        "points": points,
     }
