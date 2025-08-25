@@ -1,64 +1,73 @@
-# app/services/alerts.py
 from __future__ import annotations
-from statistics import median
-from typing import List, Dict
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import List, Optional, Tuple
 
-def _quantiles(xs: List[float], qs=(0.1, 0.5, 0.9)) -> Dict[float, float]:
-    if not xs:
-        return {}
-    ys = sorted(xs)
-    n = len(ys)
-    out = {}
-    for q in qs:
-        i = q*(n-1)
-        lo, hi = int(i), min(int(i)+1, n-1)
-        w = i - lo
-        out[q] = ys[lo]*(1-w) + ys[hi]*w
-    return out
+# 轻量工具：分位数、MAD、变点分数
+def _quantile(xs: List[float], q: float) -> float:
+    if not xs: return float("nan")
+    xs = sorted(xs); n = len(xs); p = (n-1)*q
+    i, f = int(p), p-int(p)
+    return xs[i] if f==0 else xs[i]*(1-f)+xs[min(i+1,n-1)]*f
 
-def compute_dwell_alert(points: List[Dict]) -> List[Dict]:
-    """
-    points: [{"date": "YYYY-MM-DD", "dwell_hours": float, "src": "..."} ...] 按日期升序
-    """
-    if len(points) < 7:
+def _mad(xs: List[float]) -> float:
+    if not xs: return 0.0
+    med = _quantile(xs, 0.5)
+    dev = [abs(x-med) for x in xs]
+    return _quantile(dev, 0.5) or 1e-9
+
+def _change_score(recent: List[float], prev: List[float]) -> float:
+    """简易变点：最近k均值 vs 前k均值，用 MAD 归一"""
+    if not recent or not prev: return 0.0
+    mu_r, mu_p = sum(recent)/len(recent), sum(prev)/len(prev)
+    s = abs(mu_r-mu_p) / _mad(prev)
+    return s
+
+@dataclass
+class SeriesPoint:
+    d: date
+    v: Optional[float]  # 允许空洞（None）
+
+@dataclass
+class Alert:
+    date: date
+    metric: str
+    delta: float
+    severity: str
+    explain: str
+
+def compute_alerts(points: List[SeriesPoint],
+                   metric_name: str="dwell_hours",
+                   min_points: int=8) -> List[Alert]:
+    """分位阈值 + 简单变点。返回 0或1 条 alert。"""
+    xs = [p.v for p in points if p.v is not None]
+    if len(xs) < min_points:
         return []
 
-    vals = [float(p["dwell_hours"]) for p in points]
-    latest = vals[-1]
-    qs = _quantiles(vals[:-1], qs=(0.1, 0.5, 0.9))
-    p10, p50, p90 = qs.get(0.1), qs.get(0.5), qs.get(0.9)
+    latest = xs[-1]
+    # 基线 = 前半段的中位数；阈值使用 IQR（Q75-Q25）
+    first_half = xs[:len(xs)//2]
+    med = _quantile(first_half, 0.5)
+    q25 = _quantile(first_half, 0.25)
+    q75 = _quantile(first_half, 0.75)
+    iqr = max(q75 - q25, 1e-9)
 
-    # 变点：最近3天均值 vs 之前7天均值
-    tail3 = median(vals[-3:]) if len(vals) >= 3 else latest
-    head7 = median(vals[:-3][-7:]) if len(vals) > 10 else median(vals[:-1])
+    delta = float(round(latest - med, 2))
+    # 变点分数（最近k=3 vs 前k=3）
+    k = min(3, len(xs)//4 or 1)
+    cp = _change_score(xs[-k:], xs[-2*k:-k] if len(xs) >= 2*k else xs[:-k])
 
-    delta = latest - p50
-    norm = 0.0
-    band = max(p90 - p50, p50 - p10, 1e-6)
-    norm = delta / band  # 归一化偏离
+    # 规则融合：按照 |delta| 与 cp 两者取重
+    # 等级：high(>=1.5*IQR 或 cp>=6) / medium(>=0.75*IQR 或 cp>=3) / low(其他非零)
+    ad = abs(delta)
+    if ad >= 1.5*iqr or cp >= 6:
+        sev = "high"
+    elif ad >= 0.75*iqr or cp >= 3:
+        sev = "medium"
+    elif ad > 0:
+        sev = "low"
+    else:
+        return []
 
-    severity = "low"
-    if abs(norm) >= 1.5:
-        severity = "medium"
-    if abs(norm) >= 2.5:
-        severity = "high"
-
-    why = []
-    if latest >= p90:
-        why.append("latest ≥ p90（显著偏高）")
-    elif latest <= p10:
-        why.append("latest ≤ p10（显著偏低）")
-
-    if abs(tail3 - head7) >= max(0.2 * max(p50, 1.0), 0.5):  # 相对或绝对阈
-        why.append("近3天均值相对近段基线有显著变化（变点）")
-
-    return [{
-        "type": "dwell_change",
-        "latest": round(latest, 2),
-        "median": round(p50, 2),
-        "p10": round(p10, 2),
-        "p90": round(p90, 2),
-        "change_vs_median": round(delta, 2),
-        "severity": severity,
-        "why": "; ".join(why) if why else "波动在正常范围"
-    }]
+    msg = f"Δ vs baseline={med:.1f}h; IQR={iqr:.1f}h; cp={cp:.1f}"
+    return [Alert(date=points[-1].d, metric=metric_name, delta=delta, severity=sev, explain=msg)]
