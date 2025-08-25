@@ -1253,3 +1253,14 @@ main(){
     -H "X-Forwarded-Proto: http" \
     -H "X-Forwarded-Port: 8080" \
     -H "X-Forward
+log "error envelope / request-id (single request)"
+RID_HDR="$(mktemp)"; RID_BODY="$(mktemp)"
+curl -sS -D "$RID_HDR" "$BASE/__nope__" -o "$RID_BODY" >/dev/null 2>&1 || true
+HDR_ID="$(awk 'BEGIN{IGNORECASE=1}/^x-request-id:/{gsub(/\r/,"");print $2}' "$RID_HDR")"
+BODY_ID="$(jq -r '.request_id' "$RID_BODY" 2>/dev/null || echo '')"
+echo "header=$HDR_ID body=$BODY_ID"
+[ -n "$HDR_ID" ] && [ "$HDR_ID" = "$BODY_ID" ] || { echo "request-id mismatch"; exit 1; }
+
+log "trend HEAD (200 headers-only)"
+curl -sS -I -H "$API_HEADER" "$BASE/v1/ports/$UNLOCODE/trend?days=7&fields=vessels&format=csv" \
+ | sed -n '1p' | grep -q "200" || { echo "HEAD not 200"; exit 1; }
