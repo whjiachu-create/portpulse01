@@ -1264,3 +1264,6 @@ echo "header=$HDR_ID body=$BODY_ID"
 log "trend HEAD (200 headers-only)"
 curl -sS -I -H "$API_HEADER" "$BASE/v1/ports/$UNLOCODE/trend?days=7&fields=vessels&format=csv" \
  | sed -n '1p' | grep -q "200" || { echo "HEAD not 200"; exit 1; }
+cmdor log "sources HEAD (200)"
+curl -sS -I "$BASE/v1/sources" | awk 'BEGIN{IGNORECASE=1}/^(HTTP|cache-control:)/{gsub(/\r/,"");print}' \
+  | sed -n '1p' | grep -q "200" || { echo "HEAD /v1/sources not 200"; exit 1; }
