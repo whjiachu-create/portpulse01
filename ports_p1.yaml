@@ -1,0 +1,77 @@
+# P1 核心 + 补充港口（50+）。后续 ETL 以此为基准跑数与监控。
+# 字段：unlocode, name, role
+ports:
+  # 美国（10）
+  - {unlocode: USLAX, name: "Los Angeles", role: G}
+  - {unlocode: USLGB, name: "Long Beach", role: G}
+  - {unlocode: USNYC, name: "New York/New Jersey", role: G}
+  - {unlocode: USSAV, name: "Savannah", role: G}
+  - {unlocode: USCHS, name: "Charleston", role: G}
+  - {unlocode: USORF, name: "Norfolk/Virginia", role: G}
+  - {unlocode: USHOU, name: "Houston", role: G}
+  - {unlocode: USSEA, name: "Seattle", role: G}
+  - {unlocode: USTIW, name: "Tacoma", role: G}
+  - {unlocode: USOAK, name: "Oakland", role: G}
+  # 欧洲（10）
+  - {unlocode: NLRTM, name: "Rotterdam", role: G/H}
+  - {unlocode: BEANR, name: "Antwerp-Bruges", role: G/H}
+  - {unlocode: DEHAM, name: "Hamburg", role: G}
+  - {unlocode: DEBRV, name: "Bremerhaven", role: G}
+  - {unlocode: FRLEH, name: "Le Havre (HAROPA)", role: G}
+  - {unlocode: GBFXT, name: "Felixstowe", role: G}
+  - {unlocode: GBLGP, name: "London Gateway", role: G}
+  - {unlocode: ESVLC, name: "Valencia", role: G}
+  - {unlocode: ESALG, name: "Algeciras", role: H}
+  - {unlocode: GRPIR, name: "Piraeus", role: H}
+  # 亚洲（10）
+  - {unlocode: CNSHA, name: "Shanghai", role: G}
+  - {unlocode: CNNGB, name: "Ningbo-Zhoushan", role: G}
+  - {unlocode: CNYTN, name: "Shenzhen (Yantian)", role: G}
+  - {unlocode: CNTAO, name: "Qingdao", role: G}
+  - {unlocode: KRPUS, name: "Busan", role: H}
+  - {unlocode: SGSIN, name: "Singapore", role: H}
+  - {unlocode: MYTPP, name: "Tanjung Pelepas", role: H}
+  - {unlocode: THLCH, name: "Laem Chabang", role: G}
+  - {unlocode: INNSA, name: "Nhava Sheva (JNPT)", role: G}
+  - {unlocode: INMUN, name: "Mundra", role: G}
+  # 北美补充
+  - {unlocode: USBAL, name: "Baltimore", role: G}
+  - {unlocode: USPHL, name: "Philadelphia", role: G}
+  - {unlocode: USPEF, name: "Port Everglades", role: G}
+  - {unlocode: USMSY, name: "New Orleans", role: G}     # 如不通用可换 USNOL
+  - {unlocode: USMOB, name: "Mobile", role: G}
+  - {unlocode: USJAX, name: "Jacksonville", role: G}
+  - {unlocode: CAVAN, name: "Vancouver, BC", role: G}
+  - {unlocode: CAPRU, name: "Prince Rupert, BC", role: G}
+  # 欧洲补充
+  - {unlocode: ESBCN, name: "Barcelona", role: G}
+  - {unlocode: ITGIT, name: "Gioia Tauro", role: H}
+  - {unlocode: SIKOP, name: "Koper", role: H}
+  - {unlocode: ITTRI, name: "Trieste", role: H}
+  - {unlocode: PLGDN, name: "Gdansk", role: G}
+  - {unlocode: SEGOT, name: "Gothenburg", role: G}
+  - {unlocode: MAPTM, name: "Tanger-Med", role: H}
+  # 亚洲/中东/南亚补充
+  - {unlocode: CNXMN, name: "Xiamen", role: G}
+  - {unlocode: CNTNJ, name: "Tianjin (Xingang)", role: G}
+  - {unlocode: CNSNS, name: "Guangzhou (Nansha)", role: G}
+  - {unlocode: JPTYO, name: "Tokyo", role: G}
+  - {unlocode: JPYOK, name: "Yokohama", role: G}
+  - {unlocode: JPNGO, name: "Nagoya", role: G}
+  - {unlocode: VNSGN, name: "Ho Chi Minh (Cat Lai)", role: G}
+  - {unlocode: VNHPH, name: "Hai Phong", role: G}
+  - {unlocode: IDJKT, name: "Jakarta (Tanjung Priok)", role: G}
+  - {unlocode: PHMNL, name: "Manila", role: G}
+  - {unlocode: AEJEA, name: "Jebel Ali", role: H}
+  - {unlocode: SADMM, name: "Dammam", role: G}
+  - {unlocode: SAJED, name: "Jeddah", role: G}
+  - {unlocode: OMSLL, name: "Salalah", role: H}
+  - {unlocode: LKCMB, name: "Colombo", role: H}
+  # 拉美
+  - {unlocode: MXZLO, name: "Manzanillo (MX)", role: G}
+  - {unlocode: MXLZC, name: "Lázaro Cárdenas", role: G}
+  - {unlocode: PABLB, name: "Balboa", role: H}
+  - {unlocode: PAONX, name: "Colón", role: H}
+  - {unlocode: BRSSZ, name: "Santos", role: G}
+  - {unlocode: COCTG, name: "Cartagena", role: G}
+  - {unlocode: PECLL, name: "Callao", role: G}
