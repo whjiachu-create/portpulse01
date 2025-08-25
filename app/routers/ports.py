@@ -313,9 +313,10 @@ def _demo_trend(unlocode: str, days: int) -> List[TrendPoint]:
 
 @router.get("/{unlocode}/trend", response_model=TrendResponse, summary="Port trend series (json/csv)")
 async def get_trend(
+    unlocode: str,
     request: Request,
     response: Response,
-    unlocode: str,
+
     days: int = Query(180, ge=1, le=365),
     fields: Optional[str] = Query(None, description="vessels,avg_wait_hours,congestion_score"),
     format: str = Query("json", pattern="^(json|csv)$"),
@@ -354,7 +355,11 @@ async def get_trend(
     return TrendResponse(unlocode=unlocode, points=points)
 
 @router.get("/{unlocode}/dwell", response_model=DwellResponse, summary="Daily dwell hours")
-async def get_dwell(unlocode: str, days: int = Query(30, ge=1, le=90), response: Response):
+async def get_dwell(
+    unlocode: str,
+    response: Response,
+    days: int = Query(30, ge=1, le=90),
+):
     pts: List[DwellPoint] = []
     if unlocode in {"USLAX","USNYC"}:
         today = date.today()
@@ -386,9 +391,10 @@ from app.schemas.port import (
 
 @router.get("/{unlocode}/trend", response_model=TrendResponse, summary="Port trend series (json/csv)")
 async def get_trend(
+    unlocode: str,
     request: Request,
     response: Response,
-    unlocode: str,
+
     days: int = Query(180, ge=1, le=365),
     fields: Optional[str] = Query(None, description="comma-joined: vessels,avg_wait_hours,congestion_score"),
     format: str = Query("json", pattern="^(json|csv)$"),
