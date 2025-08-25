@@ -129,3 +129,41 @@ async def get_snapshot(response: Response, unlocode: str):
         metrics = SnapshotMetrics(vessels=57, avg_wait_hours=26.0, congestion_score=62.0)
         return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=metrics, source=SourceInfo(src="DEMO"))
     return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=SnapshotMetrics(), source=SourceInfo(src=None))
+# HEAD for trend CSV: same headers (ETag/Cache-Control), no body
+from fastapi import Response, Request, Query
+from typing import Optional
+import hashlib
+from datetime import date, timedelta
+
+@router.head("/{unlocode}/trend")
+async def head_trend(
+    unlocode: str,
+    request: Request,
+    days: int = Query(180, ge=1, le=365),
+    fields: Optional[str] = Query(None),
+):
+    # 复用 get_trend 的生成规则（轻量内联，无需读真实数据）
+    cols = ["vessels","avg_wait_hours","congestion_score"]
+    if fields:
+        pick = [f for f in fields.split(",") if f in cols]
+        if pick: cols = pick
+
+    # 小体量占位，确保 ETag 稳定
+    today = date.today()
+    header = ["date"] + cols + ["src"]
+    rows = [",".join(header)]
+    for i in range(7):
+        d = (today - timedelta(days=6 - i)).isoformat()
+        rows.append(",".join([d] + [""]*len(cols) + ["DEMO"]))
+    body = "\n".join(rows) + "\n"
+    etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest() + '"'
+
+    inm = request.headers.get("if-none-match","")
+    headers = {
+        "Cache-Control": "public, max-age=300, no-transform",
+        "ETag": etag,
+        "Vary": "Accept-Encoding",
+    }
+    if etag in inm or f'W/{etag}' in inm:
+        return Response(status_code=304, headers=headers)
+    return Response(status_code=200, headers=headers)

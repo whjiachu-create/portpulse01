@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from typing import Optional
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from app.middlewares import RequestIdMiddleware
 from app.schemas import ErrorModel
 
 def _err_json(request: Request, status: int, code: str, message: str, hint: Optional[str] = None):
@@ -14,6 +15,7 @@ def _err_json(request: Request, status: int, code: str, message: str, hint: Opti
 
 def create_app() -> FastAPI:
     app = FastAPI(title="PortPulse API", version="1.0.0")
+    app.add_middleware(RequestIdMiddleware)
     # 中间件：RequestId / ResponseTime / JsonErrorEnvelope / AccessLog / DefaultCacheControl（若有）
     from app.routers import meta, ports, hs
     app.include_router(meta.router, prefix="/v1", tags=["meta"])

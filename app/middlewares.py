@@ -66,3 +66,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         )
         
         return response
+# --- Request ID middleware (P0) ---
+import uuid
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Populate request.state.request_id and mirror to 'x-request-id' header."""
+    async def dispatch(self, request: Request, call_next):
+        rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        request.state.request_id = rid
+        resp: Response = await call_next(request)
+        resp.headers["x-request-id"] = rid
+        return resp
