@@ -1,3 +1,9 @@
+
+import os, sys
+if not (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")):
+    print("[sync_public_beta] GH_TOKEN missing; skip sync.")
+    sys.exit(0)
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 

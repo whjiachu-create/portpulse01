@@ -1,21 +1,18 @@
-from __future__ import annotations
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
-import time
-from ..services.deps import get_db_pool
+from fastapi import APIRouter, Response
+from datetime import datetime, timezone
+from app.schemas import SourcesResponse, SourceItem
 
-router = APIRouter()
+router = APIRouter(tags=["meta"])
 
-@router.get("/health")
-async def health_check():
-    return JSONResponse(
-        {"ok": True, "ts": time.time()},
-        headers={"Cache-Control": "no-store"}
-    )
+@router.get("/sources", response_model=SourcesResponse, summary="List data sources")
+async def list_sources(response: Response) -> SourcesResponse:
+    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    items = [
+        SourceItem(id="ais_a", name="AIS Provider A", license="CC-BY"),
+        SourceItem(id="port_bulletin", name="Port Bulletin"),
+    ]
+    return SourcesResponse(sources=items, as_of=datetime.now(timezone.utc))
 
-@router.get("/meta/dependencies")
-async def list_dependencies(pool=Depends(get_db_pool)):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT DISTINCT name FROM dependencies ORDER BY name")
-        deps = [row["name"] for row in rows]
-        return {"dependencies": deps}
+@router.head("/sources")
+async def head_sources(response: Response):
+    return Response(status_code=200, headers={"Cache-Control": "public, max-age=300, no-transform"})
