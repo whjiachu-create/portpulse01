@@ -1,0 +1,6 @@
+# 路由/工厂属于高风险，必须评审
+/app/main.py            @whjiachu-create @nick322288
+/app/routers/**         @whjiachu-create @nick322288
+/app/schemas/**         @whjiachu-create @nick322288
+/.github/workflows/**   @whjiachu-create
+/scripts/**             @whjiachu-create

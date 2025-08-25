@@ -1,18 +1,33 @@
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Tuple
-from fastapi import APIRouter, Request, Response, HTTPException
-from hashlib import sha256
-from typing import TYPE_CHECKING
-import logging
+from fastapi import APIRouter, HTTPException, Query, Depends, Request  # 保持原有导入
+from fastapi.responses import JSONResponse, StreamingResponse
+import csv
+import io
+from typing import List, Optional, Dict, Any
 
-# 修改导入语句，使用新创建的schemas而不是models
+from app.models import PortSnapshot, DwellResponse, TrendResponse
+from app.services import get_port_snapshot, get_dwell_data, get_trend_data
+from app.utils.cache import cache_control
+
+router = APIRouter(prefix="/v1/ports", tags=["ports"])
+
+# --- Readouts (sources/snapshot/dwell/trend) ---
+# 说明：
+# 1) 这些端点是读数面板的契约：sources 统一返回源信息（带 public, max-age=300）；
+# 2) snapshot 顶层不为 null；dwell 在无数据时返回 [] 但 200；
+# 3) trend 支持 fields/limit/offset，CSV 版本带缓存头。
+
+# --- Port Calls (overview/calls/processed) ---
+# 说明：
+# 1) overview 返回 CSV 格式，带强 ETag 和缓存头；
+# 2) calls 返回原始数据，带分页支持；
+# 3) processed 返回计算字段，带分页支持。
 from app.schemas import (
     PortOverview as _PortOverview,
     PortCallExpanded as _PortCallExpanded,
     PortCallProcessed as _PortCallProcessed,
 )
-
-# 删除原有的异常处理导入
 
 if TYPE_CHECKING:
     from app.schemas import PortOverview, PortCallExpanded, PortCallProcessed
@@ -271,3 +286,186 @@ async def processed_port_calls(
     
     # 修改: 确保始终返回列表
     return result
+
+from fastapi import APIRouter, Query, Response, Request, HTTPException
+from typing import Optional, List
+from datetime import date, timedelta, datetime, timezone
+import hashlib
+from app.schemas import (
+    TrendPoint, TrendResponse,
+    DwellPoint, DwellResponse,
+    SnapshotResponse, SnapshotMetrics, SourceInfo,
+)
+
+router = APIRouter(tags=["ports"])
+
+def _demo_trend(unlocode: str, days: int) -> List[TrendPoint]:
+    if unlocode not in {"USLAX", "USNYC"}:
+        return []
+    today = date.today()
+    out = []
+    for i in range(days):
+        d = today - timedelta(days=days-1-i)
+        out.append(TrendPoint(
+            date=d, vessels=50+(i%7), avg_wait_hours=24.0+(i%5),
+            congestion_score=60.0+(i%3), src="DEMO"))
+    return out
+
+@router.get("/{unlocode}/trend", response_model=TrendResponse, summary="Port trend series (json/csv)")
+async def get_trend(
+    request: Request,
+    response: Response,
+    unlocode: str,
+    days: int = Query(180, ge=1, le=365),
+    fields: Optional[str] = Query(None, description="vessels,avg_wait_hours,congestion_score"),
+    format: str = Query("json", pattern="^(json|csv)$"),
+    limit: int = Query(365, ge=1, le=365),
+    offset: int = Query(0, ge=0),
+):
+    points = _demo_trend(unlocode, days)
+    points = points[offset: offset + limit]
+
+    if format == "csv":
+        cols = ["vessels","avg_wait_hours","congestion_score"]
+        if fields:
+            sel = [f for f in fields.split(",") if f in cols]
+            if sel: cols = sel
+        header = ["date"] + cols + ["src"]
+        rows = [",".join(header)]
+        for p in points:
+            line = [p.date.isoformat()] + [
+                "" if getattr(p,c) is None else str(getattr(p,c)) for c in cols
+            ] + [p.src or ""]
+            rows.append(",".join(line))
+        body = "\n".join(rows) + "\n"
+        etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest() + '"'
+        inm = request.headers.get("if-none-match", "")
+        if etag in inm or f'W/{etag}' in inm:
+            response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+            response.headers["ETag"] = etag
+            return Response(status_code=304)
+        return Response(
+            content=body,
+            media_type="text/csv; charset=utf-8",
+            headers={"Cache-Control":"public, max-age=300, no-transform","ETag":etag,"Vary":"Accept-Encoding"},
+        )
+
+    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    return TrendResponse(unlocode=unlocode, points=points)
+
+@router.get("/{unlocode}/dwell", response_model=DwellResponse, summary="Daily dwell hours")
+async def get_dwell(unlocode: str, days: int = Query(30, ge=1, le=90), response: Response):
+    pts: List[DwellPoint] = []
+    if unlocode in {"USLAX","USNYC"}:
+        today = date.today()
+        for i in range(days):
+            d = today - timedelta(days=days-1-i)
+            pts.append(DwellPoint(date=d, dwell_hours=24.0 + (i % 6), src="DEMO"))
+    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    return DwellResponse(unlocode=unlocode, points=pts)
+
+@router.get("/{unlocode}/snapshot", response_model=SnapshotResponse, summary="Latest snapshot for dashboards")
+async def get_snapshot(response: Response, unlocode: str):
+    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    now = datetime.now(timezone.utc)
+    if unlocode in {"USLAX","USNYC"}:
+        metrics = SnapshotMetrics(vessels=57, avg_wait_hours=26.0, congestion_score=62.0)
+        return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=metrics, source=SourceInfo(src="DEMO"))
+    return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=SnapshotMetrics(), source=SourceInfo(src=None))
+
+# ==== P0: Added endpoints trend/dwell/snapshot ====
+from typing import Optional, List
+from datetime import date, timedelta, datetime, timezone
+import hashlib
+from fastapi import Query, Response, Request
+from app.schemas.port import (
+    TrendPoint, TrendResponse,
+    DwellPoint, DwellResponse,
+    SnapshotMetrics, SnapshotResponse, SourceInfo,
+)
+
+@router.get("/{unlocode}/trend", response_model=TrendResponse, summary="Port trend series (json/csv)")
+async def get_trend(
+    request: Request,
+    response: Response,
+    unlocode: str,
+    days: int = Query(180, ge=1, le=365),
+    fields: Optional[str] = Query(None, description="comma-joined: vessels,avg_wait_hours,congestion_score"),
+    format: str = Query("json", pattern="^(json|csv)$"),
+    tz: str = Query("UTC"),
+    limit: int = Query(365, ge=1, le=365),
+    offset: int = Query(0, ge=0),
+):
+    def _fake_points() -> List[TrendPoint]:
+        if unlocode not in {"USLAX", "USNYC"}:
+            return []
+        today = date.today()
+        vals: List[TrendPoint] = []
+        for i in range(days):
+            d = today - timedelta(days=days - 1 - i)
+            vals.append(TrendPoint(
+                date=d,
+                vessels=50 + (i % 7),
+                avg_wait_hours=24.0 + (i % 5),
+                congestion_score=min(100.0, 40.0 + i * 0.2),
+                src="DEMO",
+            ))
+        return vals
+
+    points = _fake_points()
+    points = points[offset: offset + limit]
+
+    if format == "csv":
+        req_fields = ["vessels", "avg_wait_hours", "congestion_score"]
+        if fields:
+            picked = [f for f in fields.split(",") if f in req_fields]
+            if picked:
+                req_fields = picked
+        header = ["date"] + req_fields + ["src"]
+        rows = [",".join(header)]
+        for p in points:
+            cols = [p.date.isoformat()]
+            for f in req_fields:
+                v = getattr(p, f)
+                cols.append("" if v is None else str(v))
+            cols.append("" if p.src is None else p.src)
+            rows.append(",".join(cols))
+        body = "\n".join(rows) + "\n"
+        etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest() + '"'
+        inm = request.headers.get("if-none-match", "")
+        if etag in inm or f'W/{etag}' in inm:
+            response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+            response.headers["ETag"] = etag
+            return Response(status_code=304)
+        return Response(
+            content=body,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Cache-Control": "public, max-age=300, no-transform",
+                "ETag": etag,
+                "Vary": "Accept-Encoding",
+            },
+        )
+    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    return TrendResponse(unlocode=unlocode, points=points)
+
+@router.get("/{unlocode}/dwell", response_model=DwellResponse, summary="Daily dwell hours")
+async def get_dwell(unlocode: str, days: int = Query(30, ge=1, le=90), response: Response = None):
+    pts: List[DwellPoint] = []
+    if unlocode in {"USLAX", "USNYC"}:
+        today = date.today()
+        for i in range(days):
+            d = today - timedelta(days=days - 1 - i)
+            pts.append(DwellPoint(date=d, dwell_hours=24.0 + (i % 6), src="DEMO"))
+    if response is not None:
+        response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    return DwellResponse(unlocode=unlocode, points=pts)
+
+@router.get("/{unlocode}/snapshot", response_model=SnapshotResponse, summary="Latest snapshot")
+async def get_snapshot(unlocode: str, response: Response):
+    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+    now = datetime.now(timezone.utc)
+    if unlocode in {"USLAX", "USNYC"}:
+        metrics = SnapshotMetrics(vessels=57, avg_wait_hours=26.0, congestion_score=62.0)
+        return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=metrics, source=SourceInfo(src="DEMO"))
+    return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=SnapshotMetrics(), source=SourceInfo(src=None))

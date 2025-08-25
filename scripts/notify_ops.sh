@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# scripts/notify_ops.sh  —— 无 jq 版
+[[ -z "${SLACK_WEBHOOK_URL:-}" ]] && echo "SLACK_WEBHOOK_URL not set, skip notify" && exit 0
+
 # 用法：
 #   STATUS=GREEN TITLE="PortPulse selfcheck" LOG_FILE=./selfcheck.out \
 #   SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." \

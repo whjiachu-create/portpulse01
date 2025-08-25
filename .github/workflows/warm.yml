@@ -16,14 +16,9 @@ jobs:
         run: |
           set -e
           curl -fsS -H "Accept: application/json" "$BASE_URL/v1/health" >/dev/null
-          curl -fsS -H "Accept: application/json" "$BASE_URL/v1/sources" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/snapshot" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/dwell?days=14" >/dev/null
-          curl -fsS -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/overview?format=csv" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USNYC/alerts?window=14d" >/dev/null
-          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" \
-            "$BASE_URL/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" >/dev/null
+          curl -fsS -H "Accept: application/json" "$BASE_URL/v1/sources" >/dev/null  # 替换路径
+          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" "$BASE_URL/v1/ports/USLAX/snapshot" >/dev/null
+          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" "$BASE_URL/v1/ports/USLAX/dwell?days=14" >/dev/null
+          curl -fsS -H "Accept: application/json" "$BASE_URL/v1/ports/USLAX/overview?format=csv" >/dev/null
+          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" "$BASE_URL/v1/ports/USNYC/alerts?window=14d" >/dev/null
+          curl -fsS -H "Accept: application/json" -H "X-API-Key: $API_KEY" "$BASE_URL/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" >/dev/null

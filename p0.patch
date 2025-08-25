@@ -1,0 +1,325 @@
+diff --git a/app/main.py b/app/main.py
+index 1111111..2222222 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -1,17 +1,82 @@
+-from fastapi import FastAPI, Request
+-from fastapi.responses import JSONResponse
+-from starlette.exceptions import HTTPException as StarletteHTTPException
++from fastapi import FastAPI, Request
++from fastapi.responses import JSONResponse
++from starlette.exceptions import HTTPException as StarletteHTTPException
+
+-# NOTE: keep your existing imports/middlewares if present
++def _err_json(request: Request, status_code: int, code: str, message: str, hint: str | None = None) -> JSONResponse:
++    # request_id 兼容：若无中间件，也返回 "n/a"
++    req_id = getattr(getattr(request, "state", object()), "request_id", None) or "n/a"
++    return JSONResponse(
++        status_code=status_code,
++        content={"code": code, "message": message, "request_id": req_id, "hint": hint},
++        headers={"x-request-id": req_id},
++    )
+
+-def create_app() -> FastAPI:
+-    app = FastAPI(title="PortPulse API", description="API for port operations and vessel tracking", version="1.0.0")
+-    # include your existing middlewares here
+-    # include your existing routers here
+-    return app
++def create_app() -> FastAPI:
++    app = FastAPI(
++        title="PortPulse API",
++        description="API for port operations and vessel tracking",
++        version="1.0.0",
++    )
++
++    # —— 挂载中间件（若工程内已有同名中间件，这段可安全跳过）——
++    try:
++        from app.middlewares import (
++            RequestIdMiddleware,
++            ResponseTimeHeaderMiddleware,
++            JsonErrorEnvelopeMiddleware,   # 若不存在会被 except 吞掉
++            AccessLogMiddleware,
++            DefaultCacheControlMiddleware,
++        )
++        app.add_middleware(RequestIdMiddleware)
++        app.add_middleware(ResponseTimeHeaderMiddleware)
++        app.add_middleware(AccessLogMiddleware)
++        app.add_middleware(DefaultCacheControlMiddleware)
++    except Exception:
++        pass
++
++    # —— 在工厂内 include_router（关键）——
++    from app.routers import meta, readouts
++    # /v1/meta/sources
++    app.include_router(meta.router, prefix="/v1/meta", tags=["meta"])
++    # /v1/ports/{unlocode}/trend|dwell|snapshot
++    app.include_router(readouts.router, prefix="/v1/ports", tags=["ports"])
++
++    # —— 统一错误体兜底（与 request_id 对齐）——
++    @app.exception_handler(StarletteHTTPException)
++    async def _http_exc(request: Request, exc: StarletteHTTPException):
++        return _err_json(request, exc.status_code, f"http_{exc.status_code}", exc.detail or "HTTP error")
++
++    @app.exception_handler(Exception)
++    async def _unhandled(request: Request, exc: Exception):
++        return _err_json(request, 500, "http_500", "Internal Server Error")
++
++    return app
+
+ app = create_app()
+
+diff --git a/app/routers/meta.py b/app/routers/meta.py
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/app/routers/meta.py
+@@ -0,0 +1,69 @@
++from typing import List, Optional
++from datetime import datetime, timezone
++from fastapi import APIRouter, Response
++from pydantic import BaseModel, Field
++
++# —— 模型（内置，避免依赖冲突）——
++class SourceItem(BaseModel):
++    name: str
++    description: Optional[str] = None
++    license: Optional[str] = None
++    source_type: Optional[str] = None
++    last_loaded_at: Optional[datetime] = None  # UTC
++
++class SourcesResponse(BaseModel):
++    sources: List[SourceItem] = Field(default_factory=list)
++    as_of: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
++
++router = APIRouter()
++
++@router.get("/sources", response_model=SourcesResponse, summary="List data sources (transparency)")
++async def list_sources(response: Response) -> SourcesResponse:
++    # 缓存基线：public, max-age=300
++    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
++    items = [
++        SourceItem(name="AIS_A", description="Primary AIS aggregate", license="CC-BY", source_type="ais"),
++        SourceItem(name="PORT_BULLETIN", description="Port authority bulletins"),
++    ]
++    return SourcesResponse(sources=items)
++
+diff --git a/app/routers/readouts.py b/app/routers/readouts.py
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/app/routers/readouts.py
+@@ -0,0 +1,195 @@
++from __future__ import annotations
++from typing import List, Optional
++from datetime import date, datetime, timedelta, timezone
++import hashlib
++from fastapi import APIRouter, Query, Request, Response
++from pydantic import BaseModel, Field
++
++router = APIRouter()
++
++# —— 通用/简模型（内置，避免与历史 models 命名冲突）——
++class TrendPoint(BaseModel):
++    date: date
++    vessels: Optional[int] = None
++    avg_wait_hours: Optional[float] = None
++    congestion_score: Optional[float] = None
++    src: Optional[str] = None
++
++class TrendResponse(BaseModel):
++    unlocode: str
++    points: List[TrendPoint] = Field(default_factory=list)
++
++class DwellPoint(BaseModel):
++    date: date
++    dwell_hours: Optional[float] = None
++    src: Optional[str] = None
++
++class DwellResponse(BaseModel):
++    unlocode: str
++    points: List[DwellPoint] = Field(default_factory=list)
++
++class SnapshotMetrics(BaseModel):
++    vessels: Optional[int] = None
++    avg_wait_hours: Optional[float] = None
++    congestion_score: Optional[float] = None
++
++class SourceInfo(BaseModel):
++    src: Optional[str] = None
++    src_loaded_at: Optional[datetime] = None
++
++class SnapshotResponse(BaseModel):
++    unlocode: str
++    as_of: datetime
++    metrics: SnapshotMetrics
++    source: Optional[SourceInfo] = None
++
++# —— 演示/占位数据（USLAX/USNYC 返回稳定样例，其它港口允许为空）——
++def _demo_trend(unlocode: str, days: int) -> List[TrendPoint]:
++    if unlocode not in {"USLAX", "USNYC"}:
++        return []
++    today = date.today()
++    out: List[TrendPoint] = []
++    for i in range(days):
++        d = today - timedelta(days=days - 1 - i)
++        v = 50 + (i % 9)
++        a = 22.0 + (i % 7)
++        c = min(100.0, 40.0 + i * 0.25)
++        out.append(TrendPoint(date=d, vessels=v, avg_wait_hours=a, congestion_score=c, src="DEMO"))
++    return out
++
++def _demo_dwell(unlocode: str, days: int) -> List[DwellPoint]:
++    if unlocode not in {"USLAX", "USNYC"}:
++        return []
++    today = date.today()
++    out: List[DwellPoint] = []
++    for i in range(days):
++        d = today - timedelta(days=days - 1 - i)
++        out.append(DwellPoint(date=d, dwell_hours=24.0 + (i % 6), src="DEMO"))
++    return out
++
++# —— /trend —— JSON/CSV + 分页 + 强 ETag（CSV）——
++@router.get("/{unlocode}/trend", response_model=TrendResponse, summary="Port trend series (json/csv)")
++async def get_trend(
++    request: Request,
++    response: Response,
++    unlocode: str,
++    days: int = Query(180, ge=1, le=365),
++    fields: Optional[str] = Query(None, description="comma-joined: vessels,avg_wait_hours,congestion_score"),
++    format: str = Query("json", pattern="^(json|csv)$"),
++    tz: str = Query("UTC"),
++    limit: int = Query(365, ge=1, le=365),
++    offset: int = Query(0, ge=0),
++):
++    pts = _demo_trend(unlocode, days)
++    # JSON 分页；CSV 直接按当前切片导出
++    if offset or limit:
++        pts = pts[offset : offset + limit]
++
++    if format == "csv":
++        req_fields = ["vessels", "avg_wait_hours", "congestion_score"]
++        if fields:
++            filt = [f for f in fields.split(",") if f in req_fields]
++            if filt:
++                req_fields = filt
++        header = ["date"] + req_fields + ["src"]
++        rows = [",".join(header)]
++        for p in pts:
++            cols = [p.date.isoformat()]
++            for f in req_fields:
++                v = getattr(p, f)
++                cols.append("" if v is None else str(v))
++            cols.append("" if p.src is None else p.src)
++            rows.append(",".join(cols))
++        body = "\n".join(rows) + "\n"
++        etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest() + '"'
++        if etag in (request.headers.get("if-none-match") or ""):
++            response.headers["Cache-Control"] = "public, max-age=300, no-transform"
++            response.headers["ETag"] = etag
++            response.headers["Vary"] = "Accept-Encoding"
++            return Response(status_code=304)
++        response.headers["Cache-Control"] = "public, max-age=300, no-transform"
++        response.headers["ETag"] = etag
++        response.headers["Vary"] = "Accept-Encoding"
++        return Response(content=body, media_type="text/csv; charset=utf-8")
++
++    # JSON
++    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
++    return TrendResponse(unlocode=unlocode, points=pts)
++
++# —— /dwell —— 永不 500；无数据也 200 + 空数组 ——
++@router.get("/{unlocode}/dwell", response_model=DwellResponse, summary="Daily dwell hours (no-500)")
++async def get_dwell(
++    response: Response,
++    unlocode: str,
++    days: int = Query(30, ge=1, le=90),
++):
++    pts = _demo_dwell(unlocode, days)
++    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
++    return DwellResponse(unlocode=unlocode, points=pts)
++
++# —— /snapshot —— 顶层不为 null；NOPE 也 200 ——
++@router.get("/{unlocode}/snapshot", response_model=SnapshotResponse, summary="Latest snapshot for dashboards")
++async def get_snapshot(response: Response, unlocode: str):
++    response.headers["Cache-Control"] = "public, max-age=300, no-transform"
++    now = datetime.now(timezone.utc)
++    if unlocode in {"USLAX", "USNYC"}:
++        return SnapshotResponse(
++            unlocode=unlocode,
++            as_of=now,
++            metrics=SnapshotMetrics(vessels=57, avg_wait_hours=26.0, congestion_score=62.0),
++            source=SourceInfo(src="DEMO", src_loaded_at=now),
++        )
++    return SnapshotResponse(unlocode=unlocode, as_of=now, metrics=SnapshotMetrics(), source=SourceInfo())
++
+diff --git a/scripts/smoke_pr.sh b/scripts/smoke_pr.sh
+index 5555555..6666666 100755
+--- a/scripts/smoke_pr.sh
++++ b/scripts/smoke_pr.sh
+@@ -1,6 +1,9 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ BASE="${BASE:-http://127.0.0.1:8080}"
++UNLOCODE="${UNLOCODE:-USLAX}"
++API_HEADER="${API_HEADER:-X-API-Key: dev_key_123}"
++
+
+ start_server() {
+   python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 > uvicorn.log 2>&1 &
+@@ -34,6 +37,28 @@ main() {
+   echo "$H" | sed -n '1p'
+   require_header_contains "$H" "cache-control" "no-store"
+
++  log "sources"
++  HS="$(curl -sS -D - -o /dev/null "$BASE/v1/meta/sources")"
++  echo "$HS" | sed -n '1p'
++  require_header_contains "$HS" "cache-control" "max-age="
++
++  log "trend json points>0 (demo)"
++  curl -sS -H "$API_HEADER" "$BASE/v1/ports/$UNLOCODE/trend?days=14&fields=vessels,avg_wait_hours&limit=7&offset=0" \
++    | jq '.points|length' | grep -qv '^0$' || { echo "trend json empty"; exit 1; }
++
++  log "trend csv cache + ETag"
++  H1="$(curl -sSI -H "$API_HEADER" "$BASE/v1/ports/$UNLOCODE/trend?days=14&fields=vessels&format=csv")"
++  echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^(HTTP|etag:|cache-control:|vary:)/{gsub(/\r/,"");print}'
++  ET="$(echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^etag:/{print $2}')"
++  curl -sS -D - -o /dev/null -H "$API_HEADER" -H "If-None-Match: $ET" \
++    "$BASE/v1/ports/$UNLOCODE/trend?days=14&fields=vessels&format=csv" | sed -n '1p' | grep -q "304"
++
++  log "dwell NOPE -> 200 empty"
++  curl -sS "$BASE/v1/ports/NOPE/dwell?days=14" | jq '.points|length' | grep -qE '^[0-9]+$'
++
++  log "snapshot NOPE -> 200 top-object"
++  curl -sS -D - -o /dev/null "$BASE/v1/ports/NOPE/snapshot" | sed -n '1p' | grep -q "200"
++
+   if has_path "/v1/ports/{unlocode}/overview"; then
+     log "overview csv（强 ETag + 304 + HEAD）"
+     CSV="$BASE/v1/ports/$UNLOCODE/overview?format=csv"
+diff --git a/scripts/smoke_prod.sh b/scripts/smoke_prod.sh
+index 7777777..8888888 100755
+--- a/scripts/smoke_prod.sh
++++ b/scripts/smoke_prod.sh
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ BASE="${BASE:-https://api.useportpulse.com}"
++UNLOCODE="${UNLOCODE:-USLAX}"
+ API_HEADER="${API_HEADER:-X-API-Key: dev_key_123}"
+
+ echo "== health =="; curl -sS -D - -o /dev/null "$BASE/v1/health" \
+@@ -9,6 +10,13 @@ echo "== health =="; curl -sS -D - -o /dev/null "$BASE/v1/health" \
+ echo; echo "== overview csv（强 ETag + 304 + HEAD）=="
+ CSV="$BASE/v1/ports/$UNLOCODE/overview?format=csv"
+ H1="$(curl -sSI -H "$API_HEADER" "$CSV")"
+@@ -20,4 +28,12 @@ STRONG="${ETAG#W/}"
+ curl -sS -D - -o /dev/null -H "$API_HEADER" -H "If-None-Match: W/$STRONG" "$CSV" | sed -n '1p' | grep -q "304" || exit 1
+ echo; echo "-- HEAD =="; curl -sSI -H "$API_HEADER" "$CSV" | sed -n '1,10p'
+ echo; echo "Prod smoke passed."
++
++echo; echo "== sources ==";
++curl -sS -D - -o /dev/null "$BASE/v1/meta/sources" \
++ | awk 'BEGIN{IGNORECASE=1}/^(HTTP|cache-control:)/{gsub(/\r/,"");print}'
++
++echo; echo "== trend json ==";
++curl -sS -H "$API_HEADER" "$BASE/v1/ports/$UNLOCODE/trend?days=14&fields=vessels,avg_wait_hours&limit=7&offset=0" \
++ | jq '.points|length'

@@ -19,12 +19,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Import app.main (cold import guard)
+        run: |
+          python - <<'PY'
+          import importlib
+          importlib.import_module("app.main")
+          print("import app.main OK")
+          PY
       - name: Run selfcheck
         run: python -m pytest tests/selfcheck.py -v
       - name: Notify Slack (always)
-        if: always()
+        if: always() && env.SLACK_WEBHOOK_URL != ''
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          STATUS="$([[ ${{ job.status }} == 'success' ]] && echo '✅' || echo '❌')"
-          scripts/notify_ops.sh || true
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL || '' }}
+        run: scripts/notify_ops.sh
