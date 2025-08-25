@@ -57,3 +57,33 @@ async def hs_imports(
         "as_of": datetime.utcnow().isoformat() + "Z",
         "points": points,
     }
+@router.head("/{code}/imports")
+async def hs_imports_head(
+    code: str,
+    frm: str,
+    to: str,
+    months: int = 6,
+    format: str = "json",
+    request: Request = None,
+):
+    points = _build_points(code, frm, to, months)
+    # 仅对 CSV 严格计算 ETag/304；JSON 就返回 200 + 缓存头即可
+    if format == "csv":
+        rows = ["month,value,src"] + [f'{p["month"]},{p["value"]},{p["src"]}' for p in points]
+        csv_text = "\n".join(rows) + "\n"
+        etag = '"' + sha256(csv_text.encode("utf-8")).hexdigest() + '"'
+        inm = request.headers.get("if-none-match") if request else None
+        if inm:
+            cands = [s.strip() for s in inm.split(",")]
+            if etag in cands or f"W/{etag}" in cands:
+                return Response(status_code=304, headers={
+                    "ETag": etag,
+                    "Cache-Control": "public, max-age=300, no-transform",
+                    "Vary": "Accept-Encoding",
+                })
+        return Response(status_code=200, headers={
+            "ETag": etag,
+            "Cache-Control": "public, max-age=300, no-transform",
+            "Vary": "Accept-Encoding",
+        })
+    return Response(status_code=200, headers={"Cache-Control": "public, max-age=60, no-transform"})
