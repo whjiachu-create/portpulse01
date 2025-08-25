@@ -4,7 +4,7 @@ BASE="${BASE:-https://api.useportpulse.com}"
 
 required_paths=(
   "/v1/health"
-  "/v1/meta/sources"
+  "/v1/sources"
   "/v1/ports/{unlocode}/overview"
   "/v1/ports/{unlocode}/trend"
 )
