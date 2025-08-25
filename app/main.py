@@ -1,5 +1,5 @@
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles, Request
+from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from typing import Optional
