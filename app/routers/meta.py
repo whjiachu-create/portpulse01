@@ -6,6 +6,3 @@ router = APIRouter(prefix="/v1", tags=["meta"])
 @router.get("/health", summary="Liveness/Readiness")
 def health():
     return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
-
-# 在 create_app 函数中添加：
-# app.include_router(router)

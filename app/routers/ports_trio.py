@@ -62,17 +62,20 @@ async def trend(unlocode:str,
     rows=_trend_points(unlocode, days)
     rows=_limit_offset(rows, limit, offset)
 
+    
     if format=="csv":
         all_fields=["date","vessels","avg_wait_hours","congestion_score","src"]
         use_fields = [f for f in (fields.split(",") if fields else all_fields) if f in all_fields]
         if not use_fields: use_fields = all_fields
         body=_csv_bytes(rows, use_fields)
         et=_etag(body)
+        etag_value=f"\"{et}\""
+        cache_hdrs={"ETag": etag_value, "Cache-Control": "public, max-age=300, no-transform"}
         inm = request.headers.get("if-none-match")
-        cache_hdrs = {"ETag": f'"{et}"'}
-        if inm and inm.strip('"') == et:
+        if inm and inm.strip('"')==et:
+            from fastapi import Response
             return Response(status_code=304, headers=cache_hdrs)
-
+        from fastapi.responses import PlainTextResponse
         return PlainTextResponse(
             status_code=200,
             content=body.decode("utf-8"),
