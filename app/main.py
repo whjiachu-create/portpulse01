@@ -32,7 +32,7 @@ def create_app() -> FastAPI:
     from app.routers import meta, hs, alerts, ports  # noqa
 
     # /v1/sources 等
-    app.include_router(meta.router,  prefix="/v1",        tags=["meta"])
+    app.include_router(meta.router)  # 确保包含meta路由
     # /v1/hs/{code}/imports
     app.include_router(hs.router,    prefix="/v1/hs",     tags=["hs"])
     # /v1/ports/{unlocode}/alerts

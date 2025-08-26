@@ -69,12 +69,16 @@ async def trend(unlocode:str,
         body=_csv_bytes(rows, use_fields)
         et=_etag(body)
         inm = request.headers.get("if-none-match")
-        if inm and inm.strip('"')==et:
-            response.headers["ETag"]=f"\"{et}\""
-            return PlainTextResponse(status_code=304, content="")
-        response.headers["ETag"]=f"\"{et}\""
-        return PlainTextResponse(status_code=200, content=body.decode("utf-8"),
-                                 media_type="text/csv; charset=utf-8")
+        cache_hdrs = {"ETag": f'"{et}"'}
+        if inm and inm.strip('"') == et:
+            return Response(status_code=304, headers=cache_hdrs)
+
+        return PlainTextResponse(
+            status_code=200,
+            content=body.decode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers=cache_hdrs,
+        )
 
     # json
     if fields:
