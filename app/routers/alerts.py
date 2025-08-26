@@ -1,3 +1,4 @@
+from app.routers.ports_trio import _series_base
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Query, Response
@@ -44,7 +45,7 @@ async def get_alerts(unlocode: str, response: Response, window: int = Query(14, 
     # TODO(数据接入后)：替换为真实 dwell 序列读取
     series = _demo_dwell_series(unlocode, window)
 
-    alerts = compute_alerts(series, metric_name="dwell_hours")
+    alerts = compute_alerts_from_pts(pts, window)
     items = [
         AlertItem(date=a.date, metric=a.metric, delta=a.delta, severity=a.severity, explain=a.explain)
         for a in alerts
