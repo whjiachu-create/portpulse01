@@ -1,0 +1,15 @@
+name: Deploy to Railway (on main)
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy
+        uses: railwayapp/actions@v1
+        with:
+          railwayToken: ${{ secrets.RAILWAY_TOKEN }}
+          projectId: "b5e78867-91e4-42da-909a-bffc7bbcab78"
+          serviceId: "40ed0356-39e1-42bd-bf84-8ba78890e83e"
