@@ -1,5 +1,13 @@
 import os
 from fastapi import FastAPI
+import os
+try:
+    import sentry_sdk
+    SENTRY_DSN=os.getenv('SENTRY_DSN')
+    if SENTRY_DSN:
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05)
+except Exception:
+    pass
 from fastapi.staticfiles import StaticFiles
 
 # 中间件（Request-ID 如已有可保留）
@@ -39,6 +47,39 @@ def create_app() -> FastAPI:
     except Exception:
         pass
 
+    
+    from app.routers import ports_trio  # new P1 trio
+    app.include_router(ports_trio.router, prefix="/v1/ports", tags=["ports"])
+
     return app
 
 app = create_app()
+
+
+# --- unified_error_body ---
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
+from http import HTTPStatus
+import uuid
+
+def _request_id(req:Request)->str:
+    rid=req.headers.get("x-request-id") or str(uuid.uuid4())
+    return rid
+
+@app.exception_handler(HTTPException)
+async def _http_exc(request:Request, exc:HTTPException):
+    rid=_request_id(request)
+    return JSONResponse(status_code=exc.status_code,
+                        headers={"x-request-id": rid},
+                        content={"code": f"http_{exc.status_code}",
+                                 "message": exc.detail or HTTPStatus(exc.status_code).phrase,
+                                 "request_id": rid, "hint": None})
+
+@app.exception_handler(Exception)
+async def _any_exc(request:Request, exc:Exception):
+    rid=_request_id(request)
+    return JSONResponse(status_code=500,
+                        headers={"x-request-id": rid},
+                        content={"code": "http_500",
+                                 "message": "Internal Server Error",
+                                 "request_id": rid, "hint": None})
