@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from typing import Optional
 from app.middlewares import RequestIdMiddleware
-from app.routers import meta, ports, hs, alerts
+from app.routers import ports, meta, ports, hs, alerts
 def _err_json(request: Request, status: int, code: str, message: str, hint: Optional[str] = None):
     rid = getattr(request.state, "request_id", "n/a")
     return JSONResponse(status_code=status, content={"code": code, "message": message, "request_id": rid, "hint": hint})
