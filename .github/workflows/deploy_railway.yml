@@ -1,0 +1,22 @@
+name: Deploy to Railway (on main)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy via Railway
+        uses: railwayapp/railway-action@v3
+        with:
+            railwayToken: ${{ secrets.RAILWAY_TOKEN }}
+            projectId:    ${{ secrets.RAILWAY_PROJECT_ID }}
+            serviceId:    ${{ secrets.RAILWAY_SERVICE_ID }}
+            detach: false
