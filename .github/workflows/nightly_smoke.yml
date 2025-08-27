@@ -1,0 +1,31 @@
+name: Nightly smoke (prod)
+on:
+  schedule: [{ cron: "15 18 * * *" }]
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check endpoints
+        run: |
+          set -euo pipefail
+          BASE="https://api.useportpulse.com"
+
+          echo "1) health"
+          curl -fsS "$BASE/v1/health" | jq -e '.ok==true' >/dev/null
+
+          echo "2) sources"
+          curl -fsSI "$BASE/v1/sources" | awk 'NR<=6{print}'
+
+          echo "3) openapi must list ports trio"
+          jq -e '
+            .paths|has("/v1/ports/{unlocode}/trend") and
+            .paths|has("/v1/ports/{unlocode}/dwell") and
+            .paths|has("/v1/ports/{unlocode}/snapshot")
+          ' <(curl -fsS "$BASE/openapi.json") >/dev/null
+
+          echo "4) trend csv ETag/304"
+          H=$(curl -fsS -D - "$BASE/v1/ports/USLAX/trend?days=7&format=csv" -o /dev/null)
+          ET=$(printf "%s" "$H" | awk 'BEGIN{IGNORECASE=1}/^etag:/{gsub(/\r/,"");print $2}')
+          curl -fsS -D - -o /dev/null -H "If-None-Match: $ET" "$BASE/v1/ports/USLAX/trend?days=7&format=csv" \
+            | awk 'NR==1||/^[Ee][Tt][Aa][Gg]:/{print}'
