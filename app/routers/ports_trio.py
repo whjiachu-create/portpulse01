@@ -125,7 +125,7 @@ async def snapshot(unlocode:str, response:Response):
     p=pts[-1]
     return {
         "unlocode": unlocode,
-        "as_of": p["date"],
+        "as_of": __import__("datetime").datetime.utcnow().replace(microsecond=0).isoformat()+"Z", "as_of_date": p["date"],
         "metrics": {
             "vessels": p["vessels"],
             "avg_wait_hours": p["avg_wait_hours"],
