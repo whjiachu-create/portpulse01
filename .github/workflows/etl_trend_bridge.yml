@@ -1,0 +1,26 @@
+name: ETL Trend Bridge (every 30min)
+on:
+  schedule: [{ cron: "*/30 * * * *" }]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Build derived trend from prod API (bridge)
+        env:
+          BASE: https://api.useportpulse.com
+        run: |
+          python -V
+          python scripts/aggregate_trend_from_trend_api.py
+      - name: Commit & push if changed
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add data/derived/trend/*.json || true
+          git diff --cached --quiet || git commit -m "data: refresh derived trend (bridge)"
+          git push
