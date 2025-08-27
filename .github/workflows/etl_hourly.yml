@@ -1,0 +1,16 @@
+name: Hourly ETL (ports trend/dwell)
+on:
+  schedule: [{cron: "5 * * * *"}]
+  workflow_dispatch:
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: Backfill last 3h & refresh latest
+        run: |
+          python scripts/aggregate_dwell_from_port_calls.py --ports ports_p1.yaml --backfill-hours 3
+          python scripts/aggregate_dwell_from_port_calls.py --ports ports_p1.yaml --backfill-hours 0
