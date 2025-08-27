@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI
+from app.middlewares.api_key import ApiKeyMiddleware
 from app.openapi_extra import add_api_key_security
 import os
 try:
@@ -56,6 +57,8 @@ def create_app() -> FastAPI:
     return app
 
 app = create_app()
+# Attach API-Key middleware (non-invasive)
+app.add_middleware(ApiKeyMiddleware)
 add_api_key_security(app)
 
 
