@@ -59,7 +59,7 @@ async def trend(unlocode:str,
                 offset:int=Query(0, ge=0),
                 format:str=Query("json", pattern="^(json|csv)$")):
     response.headers["Cache-Control"]="public, max-age=300, no-transform"
-    rows=_trend_points(unlocode, days)
+    rows = _trend_points_from_file(unlocode, days) or _trend_points(unlocode, days)
     rows=_limit_offset(rows, limit, offset)
 
     
@@ -133,3 +133,16 @@ async def snapshot(unlocode:str, response:Response):
         },
         "source": {"src": p["src"]}
     }
+
+from pathlib import Path as _PP
+import json as _JSON
+def _trend_points_from_file(_u:str, _days:int):
+    _p=_PP(f"data/derived/trend/{_u}.json")
+    if _p.exists():
+        try:
+            _pts=_JSON.loads(_p.read_text(encoding="utf-8")).get("points",[])
+            if _days>0: _pts=_pts[-_days:]
+            return _pts
+        except Exception:
+            return None
+    return None
