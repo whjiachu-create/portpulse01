@@ -1,0 +1,19 @@
+name: Sync OpenAPI to Pages
+on:
+  schedule: [{ cron: "0 * * * *" }]   # 每小时
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch latest openapi.json from prod
+        run: |
+          curl -fsSL https://api.useportpulse.com/openapi.json -o docs/openapi.json
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add docs/openapi.json
+          git diff --cached --quiet || git commit -m "docs: update openapi.json from prod"
+          git push
