@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI
+from app.openapi_extra import add_api_key_security
 import os
 try:
     import sentry_sdk
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
     return app
 
 app = create_app()
+add_api_key_security(app)
 
 
 # --- unified_error_body ---
