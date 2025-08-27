@@ -126,3 +126,17 @@ Traceback (most recent call last):
   File "/Users/huayufei/马/数据产品/Port Operations API/portpulse/.venv/lib/python3.9/site-packages/psycopg/connection.py", line 118, in connect
     raise last_ex.with_traceback(None)
 psycopg.OperationalError: connection failed: connection to server at "2406:da18:243:7414:c71f:2b7e:5c38:ced8", port 5432 failed: FATAL:  password authentication failed for user "postgres"
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/Users/huayufei/马/数据产品/Port Operations API/portpulse/jobs/port_lax_job.py", line 20, in <module>
+    run()
+  File "/Users/huayufei/马/数据产品/Port Operations API/portpulse/jobs/port_lax_job.py", line 11, in run
+    insert_snapshot("USLAX")
+  File "/Users/huayufei/马/数据产品/Port Operations API/portpulse/etl/etl_port_lax.py", line 34, in insert_snapshot
+    with psycopg.connect(DB) as conn:
+  File "/Users/huayufei/马/数据产品/Port Operations API/portpulse/.venv/lib/python3.9/site-packages/psycopg/connection.py", line 118, in connect
+    raise last_ex.with_traceback(None)
+psycopg.OperationalError: connection failed: connection to server at "2406:da18:243:7414:c71f:2b7e:5c38:ced8", port 5432 failed: FATAL:  password authentication failed for user "postgres"

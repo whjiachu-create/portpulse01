@@ -1,0 +1,14 @@
+name: Nightly coverage & freshness
+on:
+  schedule: [{ cron: "5 18 * * *" }]   # 北京+8 每天02:05
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Coverage
+        run: BASE=https://api.useportpulse.com DAYS=30 bash scripts/check_coverage.sh ports_p1.yaml
+      - name: Freshness p95
+        run: python3 scripts/freshness_p95.py https://api.useportpulse.com
