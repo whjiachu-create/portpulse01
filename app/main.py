@@ -5,7 +5,8 @@ try:
     import sentry_sdk
     SENTRY_DSN=os.getenv('SENTRY_DSN')
     if SENTRY_DSN:
-        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05)
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05, integrations=[FastApiIntegration()])
 except Exception:
     pass
 from fastapi.staticfiles import StaticFiles
