@@ -89,6 +89,20 @@ async def trend(unlocode:str,
         rows=[{k:v for k,v in r.items() if k in keep or k=="date"} for r in rows]
     return {"unlocode": unlocode, "points": rows}
 
+
+import json, pathlib
+def _try_read_dwell_file(unlocode:str, days:int):
+    fp = pathlib.Path(f"data/derived/dwell/{unlocode.upper()}.json")
+    if not fp.exists(): return None
+    try:
+        pts = (json.loads(fp.read_text(encoding="utf-8")) or {}).get("points",[])
+        pts = [p for p in pts if p.get("date")]  # safety
+        # 截取最近 days
+        pts = pts[-days:]
+        return pts
+    except Exception:
+        return None
+
 # --------- /v1/ports/{unlocode}/dwell ----------
 @router.get("/{unlocode}/dwell", summary="Daily dwell hours")
 async def dwell(unlocode:str, response:Response, days:int=Query(30, ge=1, le=365)):
