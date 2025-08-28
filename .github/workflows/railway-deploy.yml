@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy
-        uses: railwayapp/actions@v1
+        uses: railwayapp/railway-action@v3
         with:
           railwayToken: ${{ secrets.RAILWAY_TOKEN }}
           projectId: "b5e78867-91e4-42da-909a-bffc7bbcab78"
