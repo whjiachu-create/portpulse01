@@ -1,4 +1,3 @@
-# app/services/dependencies.py
 import os
 from fastapi import Header, HTTPException, status
 

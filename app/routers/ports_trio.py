@@ -1,10 +1,11 @@
+from app.services.dependencies import require_api_key
 from datetime import date, timedelta
 from typing import List, Optional
-from fastapi import APIRouter, Query, Response, Request, HTTPException
+from fastapi import APIRouter, Query, Response, Request, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 import hashlib, csv, io
 
-router = APIRouter(tags=["ports"])
+router = APIRouter(dependencies=[Depends(require_api_key)], tags=["ports"])
 
 # --- 简易稳定序列（可复现，便于 P1 验收；后续替换为真实数据） ---
 def _series_base(unlocode:str, days:int, field:str)->List[dict]:

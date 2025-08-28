@@ -1,0 +1,16 @@
+HTTP/2 200 
+date: Wed, 27 Aug 2025 07:56:15 GMT
+content-type: text/csv; charset=utf-8
+content-length: 876
+cache-control: public, max-age=300, no-transform
+etag: "ad7930e9cedc4fbf8eb675f59a18e26e4b93153156dec200b0750d1f0515819f"
+server: cloudflare
+x-railway-edge: railway/europe-west4-drams3a
+x-railway-request-id: MwMdD2DhSXOUPH9ZrJsmnA
+x-request-id: 03fe1692389f
+cf-cache-status: REVALIDATED
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=lbtesoczVor2PHAX%2BrEbDPfLHq3pCrbUQc2M3gLRvhMmzdvBzLelBGTZLJiWtdGCnK%2FQKZNxbnYq%2FnfEHSMumSmqaKZlLmCH0YyYr2%2FQfh2L5cCFiEten0qQ%2FKzOX2cl"}]}
+cf-ray: 975a02e24994feb9-AMS
+alt-svc: h3=":443"; ma=86400
+

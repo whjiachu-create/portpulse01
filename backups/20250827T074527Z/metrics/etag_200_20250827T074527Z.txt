@@ -1,0 +1,12 @@
+HTTP/2 200 
+date: Wed, 27 Aug 2025 07:46:30 GMT
+content-type: text/csv; charset=utf-8
+content-length: 244
+cache-control: public, max-age=300, no-transform
+etag: "8b55fed3fa8bd2b4f5c7adcc2efd2f65225abccb84103a1e0558681d8418da49"
+server: cloudflare
+x-railway-edge: railway/europe-west4-drams3a
+x-railway-request-id: nRB_crrdSHyvHnTDYqdHTg
+x-request-id: 397d2b910995
+cf-cache-status: REVALIDATED
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}

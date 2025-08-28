@@ -1,6 +1,7 @@
+from app.services.dependencies import require_api_key
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Tuple
-from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi import APIRouter, Request, Response, HTTPException, Depends
 from hashlib import sha256
 from typing import TYPE_CHECKING
 import logging
@@ -17,7 +18,7 @@ from app.schemas import (
 if TYPE_CHECKING:
     from app.schemas import PortOverview, PortCallExpanded, PortCallProcessed
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_key)], )
 
 # 添加logger
 logger = logging.getLogger(__name__)
