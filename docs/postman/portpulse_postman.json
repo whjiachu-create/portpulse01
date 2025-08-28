@@ -1,0 +1,30 @@
+{
+  "info": { "name": "PortPulse API (beta)", "_postman_id": "pp-beta", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+  "item": [
+    {
+      "name": "Health",
+      "request": { "method": "GET", "url": "{{BASE}}/v1/health" }
+    },
+    {
+      "name": "Port trend (USLAX, 7d)",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "X-API-Key", "value": "{{API_KEY}}" } ],
+        "url": { "raw": "{{BASE}}/v1/ports/USLAX/trend?days=7", "host": ["{{BASE}}"], "path": ["v1","ports","USLAX","trend"], "query": [ { "key": "days", "value": "7" } ] }
+      }
+    },
+    {
+      "name": "Port trend CSV + ETag",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "X-API-Key", "value": "{{API_KEY}}" } ],
+        "url": { "raw": "{{BASE}}/v1/ports/USLAX/trend?days=7&format=csv", "host": ["{{BASE}}"], "path": ["v1","ports","USLAX","trend"], "query": [ { "key": "days", "value": "7" }, { "key": "format", "value": "csv" } ] }
+      }
+    }
+  ],
+  "event": [],
+  "variable": [
+    { "key": "BASE", "value": "https://api.useportpulse.com" },
+    { "key": "API_KEY", "value": "dev_demo_123" }
+  ]
+}

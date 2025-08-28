@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI
+from app.middlewares.rate_limit import RateLimitMiddleware
 from app.middlewares.api_key import ApiKeyMiddleware
 from app.openapi_extra import add_api_key_security
 import os
@@ -56,7 +57,9 @@ def create_app() -> FastAPI:
 
     return app
 
-app = create_app()
+\1
+# demo rate-limit (60 req/min per key+ip)
+app.add_middleware(RateLimitMiddleware)
 # Attach API-Key middleware (non-invasive)
 app.add_middleware(ApiKeyMiddleware)
 add_api_key_security(app)
