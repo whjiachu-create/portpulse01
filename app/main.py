@@ -57,7 +57,8 @@ def create_app() -> FastAPI:
 
     return app
 
-\1
+
+app = create_app()
 # demo rate-limit (60 req/min per key+ip)
 app.add_middleware(RateLimitMiddleware)
 # Attach API-Key middleware (non-invasive)
