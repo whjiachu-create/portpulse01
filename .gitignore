@@ -18,3 +18,7 @@ portpulse-site/
 logs/*.log
 scripts/smoke.sh.save
 portpulse-site/
+
+# node (backend)
+node_modules/
+package-lock.json
