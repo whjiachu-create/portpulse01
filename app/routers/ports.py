@@ -156,7 +156,7 @@ def _build_overview_csv_and_headers(unlocode: str) -> Tuple[str, dict]:
 async def get_overview_csv(
     unlocode: str,
     format: str = Query("csv", pattern="^(json|csv)$"),
-    request: Request | None = None,
+    request: Request,
 ):
     # JSON path: mirror /snapshot structure
     if format.lower() == "json":
@@ -201,7 +201,7 @@ async def get_overview_csv(
 async def head_overview_csv(
     unlocode: str,
     format: str = Query("csv", pattern="^(json|csv)$"),
-    request: Request | None = None,
+    request: Request,
 ):
     csv_text, headers = _build_overview_csv_and_headers(unlocode)
     inm = request.headers.get("if-none-match") if request else None
@@ -217,7 +217,7 @@ async def port_trend(
     unlocode: str,
     window: int = Query(7, ge=1, le=30),
     format: str = Query("json", pattern="^(json|csv)$"),
-    request: Request | None = None,
+    request: Request,
 ):
     # Prefer override
     ov = load_trend_override(unlocode, window)
@@ -252,7 +252,7 @@ async def head_port_trend(
     unlocode: str,
     window: int = Query(7, ge=1, le=30),
     format: str = Query("csv", pattern="^(json|csv)$"),
-    request: Request | None = None,
+    request: Request,
 ):
     ov = load_trend_override(unlocode, window)
     pts = (ov or {}).get("points", [])
