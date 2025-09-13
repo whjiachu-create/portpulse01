@@ -4,12 +4,12 @@ import io
 import csv
 import logging
 from hashlib import sha256
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, Tuple
 
 from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query
 
-# Auth dependency
+# Auth
 from app.services.dependencies import require_api_key
 
 # Schemas (use schemas, not models)
@@ -19,305 +19,243 @@ from app.schemas import (
     PortCallProcessed as _PortCallProcessed,
 )
 
-# Override helpers (file-based overrides + window enforcement)
+# Overrides + window helpers
 from app.services.overrides import (
     load_trend_override,
     latest_from_points,
-    snapshot_from_override,
     enforce_window,
 )
 
-if TYPE_CHECKING:
-    from app.schemas import PortOverview, PortCallExpanded, PortCallProcessed
-
 router = APIRouter(dependencies=[Depends(require_api_key)])
-
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------------------------
+# Helpers (shared)
+# ------------------------------------------------------------------------------
 
-# ----------------------------
-# Demo series (deterministic) |
-# ----------------------------
-def _demo_trend_points(unlocode: str, window: int) -> List[Dict]:
-    """
-    Deterministic fallback when no DB/override exists.
-    Contract-compatible with JSON/CSV/HEAD and strong ETag logic.
-    """
+def _now_isoz() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+def _demo_trend_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
+    """Deterministic demo when DB/override is absent."""
     today = datetime.utcnow().date()
     w = max(1, min(30, int(window or 7)))
     base_v, base_wait, base_score = 80, 26.0, 52
-    pts: List[Dict] = []
+    out: List[Dict[str, Any]] = []
     for i in range(w):
         d = today - timedelta(days=w - 1 - i)
-        pts.append(
+        out.append(
             {
                 "date": d.isoformat(),
                 "vessels": base_v + ((i * 3) % 15),
                 "avg_wait_hours": round(base_wait + ((i * 1.0) % 8), 1),
                 "congestion_score": base_score + ((i * 2) % 10),
                 "src": "demo",
-                "as_of": None
-                if i < w - 1
-                else datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "as_of": _now_isoz() if i == w - 1 else None,
             }
         )
-    return pts
+    return out
 
+def _etag_headers(csv_text: str, source: str) -> Dict[str, str]:
+    etag = '"' + sha256(csv_text.encode()).hexdigest() + '"'
+    return {
+        "ETag": etag,
+        "Cache-Control": "public, max-age=300, no-transform",
+        "Vary": "Accept-Encoding",
+        "x-csv-source": source,
+    }
 
-# ----------------------------
-# CSV builders + strong ETag  |
-# ----------------------------
-def _build_trend_csv_and_headers(unlocode: str, points: List[Dict]) -> Tuple[str, dict]:
+def _maybe_304(request: Request, headers: Dict[str, str]) -> Optional[Response]:
+    inm = request.headers.get("if-none-match")
+    if not inm:
+        return None
+    candidates = [s.strip() for s in inm.split(",")]
+    if headers["ETag"] in candidates or f'W/{headers["ETag"]}' in candidates:
+        return Response(status_code=304, headers=headers)
+    return None
+
+def _select_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
+    """Prefer overrides; fall back to demo; ensure window enforced."""
+    ov = load_trend_override(unlocode, window) or {}
+    pts = (ov.get("points") or []) or _demo_trend_points(unlocode, window)
+    payload = enforce_window({"unlocode": unlocode.upper(), "points": pts}, window)
+    return payload["points"]
+
+def _trend_csv(points: List[Dict[str, Any]]) -> str:
     buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(["date", "vessels", "avg_wait_hours", "congestion_score", "src", "as_of"])
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["date", "vessels", "avg_wait_hours", "congestion_score", "src", "as_of"])
     for p in points:
-        writer.writerow(
-            [
-                p.get("date"),
-                p.get("vessels"),
-                p.get("avg_wait_hours"),
-                p.get("congestion_score"),
-                p.get("src"),
-                p.get("as_of"),
-            ]
-        )
-    csv_text = buf.getvalue()
-    etag = '"' + sha256(csv_text.encode()).hexdigest() + '"'
-    headers = {
-        "ETag": etag,
-        "Cache-Control": "public, max-age=300, no-transform",
-        "Vary": "Accept-Encoding",
-        "x-csv-source": "ports:trend:strong-etag",
+        w.writerow([p.get("date"), p.get("vessels"), p.get("avg_wait_hours"),
+                    p.get("congestion_score"), p.get("src"), p.get("as_of")])
+    return buf.getvalue()
+
+def _latest_snapshot_flat(unlocode: str) -> Dict[str, Any]:
+    """
+    Build snapshot in **legacy flat schema** (_PortOverview):
+    waiting_vessels <- last.vessels
+    avg_wait_hours  <- last.avg_wait_hours
+    updated_at      <- last.as_of or last.date
+    其余旧字段暂留 None（P1 允许）。
+    """
+    pts = _select_points(unlocode, window=7)
+    last = latest_from_points(pts) if pts else None
+    return {
+        "unlocode": unlocode.upper(),
+        "port_name": None,
+        "country": None,
+        "arrivals_7d": None,
+        "departures_7d": None,
+        "waiting_vessels": (last or {}).get("vessels"),
+        "avg_wait_hours": (last or {}).get("avg_wait_hours"),
+        "avg_berth_hours": None,
+        "updated_at": (last or {}).get("as_of") or (last or {}).get("date"),
+        # 附加：内部使用，不在 _PortOverview schema 中
+        "_congestion_score": (last or {}).get("congestion_score"),
+        "_src": (last or {}).get("src", "demo"),
+        "_as_of_date": (last or {}).get("date"),
     }
-    return csv_text, headers
 
-
-def _build_overview_csv_and_headers(unlocode: str) -> Tuple[str, dict]:
+def _overview_csv_from_snapshot(snap: Dict[str, Any]) -> str:
     """
-    Build snapshot CSV (1 row) with strong ETag.
+    CSV 列维持现有合同（与历史一致）：
+    unlocode, as_of, as_of_date, vessels, avg_wait_hours, congestion_score, src
     """
-    # Prefer override snapshot; otherwise derive from demo last-point
-    snap = snapshot_from_override(unlocode)
-    if not isinstance(snap, dict) or not snap.get("metrics"):
-        pts = _demo_trend_points(unlocode, 7)
-        last = pts[-1] if pts else None
-        if last:
-            snap = {
-                "unlocode": unlocode.upper(),
-                "as_of": last.get("as_of"),
-                "as_of_date": last.get("date"),
-                "metrics": {
-                    "vessels": last.get("vessels"),
-                    "avg_wait_hours": last.get("avg_wait_hours"),
-                    "congestion_score": last.get("congestion_score"),
-                },
-                "source": {"src": last.get("src", "demo")},
-            }
-        else:
-            snap = {
-                "unlocode": unlocode.upper(),
-                "as_of": None,
-                "as_of_date": None,
-                "metrics": {"vessels": None, "avg_wait_hours": None, "congestion_score": None},
-                "source": {"src": "demo"},
-            }
-
     buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(["unlocode", "as_of", "as_of_date", "vessels", "avg_wait_hours", "congestion_score", "src"])
-    writer.writerow(
-        [
-            snap.get("unlocode"),
-            snap.get("as_of"),
-            snap.get("as_of_date"),
-            (snap.get("metrics") or {}).get("vessels"),
-            (snap.get("metrics") or {}).get("avg_wait_hours"),
-            (snap.get("metrics") or {}).get("congestion_score"),
-            (snap.get("source") or {}).get("src"),
-        ]
-    )
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["unlocode", "as_of", "as_of_date", "vessels", "avg_wait_hours", "congestion_score", "src"])
+    w.writerow([
+        snap.get("unlocode"),
+        snap.get("updated_at"),
+        snap.get("_as_of_date"),
+        snap.get("waiting_vessels"),
+        snap.get("avg_wait_hours"),
+        snap.get("_congestion_score"),
+        snap.get("_src"),
+    ])
+    return buf.getvalue()
 
-    csv_text = buf.getvalue()
-    etag = '"' + sha256(csv_text.encode()).hexdigest() + '"'
-    headers = {
-        "ETag": etag,
-        "Cache-Control": "public, max-age=300, no-transform",
-        "Vary": "Accept-Encoding",
-        "x-csv-source": "ports:overview:strong-etag",
-    }
-    return csv_text, headers
+def _parse_date_range(start_date: Optional[str], end_date: Optional[str]) -> Tuple[datetime.date, datetime.date]:
+    try:
+        if not start_date and not end_date:
+            end_d = datetime.utcnow().date()
+            start_d = end_d - timedelta(days=30)
+        elif not start_date:
+            end_d = datetime.strptime(end_date, "%Y-%m-%d").date()
+            start_d = end_d - timedelta(days=30)
+        elif not end_date:
+            start_d = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_d = start_d + timedelta(days=30)
+        else:
+            start_d = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_d = datetime.strptime(end_date, "%Y-%m-%d").date()
+        if start_d > end_d:
+            raise HTTPException(status_code=422, detail="start_date must be before or equal to end_date")
+        return start_d, end_d
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD")
 
+def _validate_pagination(limit: Optional[int], offset: Optional[int]) -> Tuple[int, int]:
+    l = 100 if limit is None else limit
+    o = 0 if offset is None else offset
+    if not (1 <= l <= 1000):
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
+    if not (0 <= o <= 100000):
+        raise HTTPException(status_code=422, detail="offset must be between 0 and 100000")
+    return l, o
 
-# ----------------------------
-# Routes                      |
-# ----------------------------
+def _get_port_service():
+    try:
+        from app.services.deps import PortService  # preferred
+        return PortService()
+    except Exception:
+        try:
+            from app.services.dependencies import PortService  # fallback
+            return PortService()
+        except Exception as e:
+            logger.error("PortService import failed: %s", e)
+            return None
+
+# ------------------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------------------
+
 @router.get("/{unlocode}/overview")
-async def get_overview_csv(
+async def get_overview(
     unlocode: str,
-    request: Request,  # ← moved before defaults
+    request: Request,                                  # non-default before defaults
     format: str = Query("csv", pattern="^(json|csv)$"),
 ):
-    # JSON path: mirror /snapshot structure
+    snap = _latest_snapshot_flat(unlocode)
+
     if format.lower() == "json":
-        snap = snapshot_from_override(unlocode)
-        if not isinstance(snap, dict):
-            pts = _demo_trend_points(unlocode, 7)
-            last = pts[-1] if pts else None
-            if last:
-                snap = {
-                    "unlocode": unlocode.upper(),
-                    "as_of": last.get("as_of"),
-                    "as_of_date": last.get("date"),
-                    "metrics": {
-                        "vessels": last.get("vessels"),
-                        "avg_wait_hours": last.get("avg_wait_hours"),
-                        "congestion_score": last.get("congestion_score"),
-                    },
-                    "source": {"src": last.get("src", "demo")},
-                }
-            else:
-                snap = {
-                    "unlocode": unlocode.upper(),
-                    "as_of": None,
-                    "as_of_date": None,
-                    "metrics": {"vessels": None, "avg_wait_hours": None, "congestion_score": None},
-                    "source": {"src": "demo"},
-                }
-        return snap
+        # mirror /snapshot (legacy flat)
+        return {k: v for k, v in snap.items() if not k.startswith("_")}
 
-    # CSV path with strong ETag & conditional 304
-    csv_text, headers = _build_overview_csv_and_headers(unlocode)
-    inm = request.headers.get("if-none-match") if request else None
-    if inm:
-        candidates = [s.strip() for s in inm.split(",")]
-        if headers["ETag"] in candidates or f'W/{headers["ETag"]}' in candidates:
-            return Response(status_code=304, headers=headers)
-
+    # CSV + strong ETag + conditional 304
+    csv_text = _overview_csv_from_snapshot(snap)
+    headers = _etag_headers(csv_text, "ports:overview:strong-etag")
+    maybe = _maybe_304(request, headers)
+    if maybe:
+        return maybe
     return Response(content=csv_text.encode(), media_type="text/csv; charset=utf-8", headers=headers)
 
-
 @router.head("/{unlocode}/overview")
-async def head_overview_csv(
+async def head_overview(
     unlocode: str,
-    request: Request,  # ← moved before defaults
+    request: Request,
     format: str = Query("csv", pattern="^(json|csv)$"),
 ):
-    csv_text, headers = _build_overview_csv_and_headers(unlocode)
-    inm = request.headers.get("if-none-match") if request else None
-    if inm:
-        candidates = [s.strip() for s in inm.split(",")]
-        if headers["ETag"] in candidates or f'W/{headers["ETag"]}' in candidates:
-            return Response(status_code=304, headers=headers)
+    csv_text = _overview_csv_from_snapshot(_latest_snapshot_flat(unlocode))
+    headers = _etag_headers(csv_text, "ports:overview:strong-etag")
+    maybe = _maybe_304(request, headers)
+    if maybe:
+        return maybe
     return Response(status_code=200, headers=headers)
 
-
 @router.get("/{unlocode}/trend", summary="Port trend (JSON/CSV)")
-async def port_trend(
+async def get_trend(
     unlocode: str,
-    request: Request,  # ← moved before defaults
+    request: Request,
     window: int = Query(7, ge=1, le=30),
     format: str = Query("json", pattern="^(json|csv)$"),
 ):
-    # Prefer override
-    ov = load_trend_override(unlocode, window)
-    points = (ov or {}).get("points", [])
-
-    # Extra window enforcement
-    if window and len(points) > window:
-        points = points[-window:]
-
-    # Fallback
-    if not points:
-        points = _demo_trend_points(unlocode, window)
+    points = _select_points(unlocode, window)
 
     if format.lower() == "json":
-        payload = {"unlocode": unlocode.upper(), "points": points}
-        payload = enforce_window(payload, window)
-        return payload
+        return {"unlocode": unlocode.upper(), "points": points}
 
-    # CSV
-    payload = enforce_window({"unlocode": unlocode.upper(), "points": points}, window)
-    csv_text, headers = _build_trend_csv_and_headers(unlocode, payload["points"])
-    inm = request.headers.get("if-none-match") if request else None
-    if inm:
-        candidates = [s.strip() for s in inm.split(",")]
-        if headers["ETag"] in candidates or f'W/{headers["ETag"]}' in candidates:
-            return Response(status_code=304, headers=headers)
+    csv_text = _trend_csv(points)
+    headers = _etag_headers(csv_text, "ports:trend:strong-etag")
+    maybe = _maybe_304(request, headers)
+    if maybe:
+        return maybe
     return Response(content=csv_text.encode(), media_type="text/csv; charset=utf-8", headers=headers)
 
-
 @router.head("/{unlocode}/trend")
-async def head_port_trend(
+async def head_trend(
     unlocode: str,
-    request: Request,  # ← moved before defaults
+    request: Request,
     window: int = Query(7, ge=1, le=30),
     format: str = Query("csv", pattern="^(json|csv)$"),
 ):
-    ov = load_trend_override(unlocode, window)
-    pts = (ov or {}).get("points", [])
-    if not pts:
-        pts = _demo_trend_points(unlocode, window)
-    payload = enforce_window({"unlocode": unlocode.upper(), "points": pts}, window)
-    csv_text, headers = _build_trend_csv_and_headers(unlocode, payload["points"])
-    inm = request.headers.get("if-none-match") if request else None
-    if inm:
-        candidates = [s.strip() for s in inm.split(",")]
-        if headers["ETag"] in candidates or f'W/{headers["ETag"]}' in candidates:
-            return Response(status_code=304, headers=headers)
+    csv_text = _trend_csv(_select_points(unlocode, window))
+    headers = _etag_headers(csv_text, "ports:trend:strong-etag")
+    maybe = _maybe_304(request, headers)
+    if maybe:
+        return maybe
     return Response(status_code=200, headers=headers)
 
-
 @router.get("/{unlocode}/snapshot", response_model=_PortOverview, summary="Port snapshot")
-async def port_snapshot(unlocode: str) -> Dict[str, Any]:
-    """
-    Snapshot with robust fallbacks:
-    1) override-derived from trend.json
-    2) demo last-point if nothing available
-    """
-    # 1) override
-    try:
-        ov_snap = snapshot_from_override(unlocode)
-        if ov_snap:
-            return ov_snap
-    except Exception:
-        logger.exception("snapshot_from_override failed for %s", unlocode)
+async def snapshot(unlocode: str) -> _PortOverview:
+    """Legacy flat snapshot derived from trend (override preferred, fallback demo)."""
+    return {k: v for k, v in _latest_snapshot_flat(unlocode).items() if not k.startswith("_")}
 
-    # 2) demo-derived
-    pts = _demo_trend_points(unlocode, 7)
-    last = pts[-1] if pts else None
-    if last:
-        return {
-            "unlocode": unlocode.upper(),
-            "as_of": last.get("as_of"),
-            "as_of_date": last.get("date"),
-            "metrics": {
-                "vessels": last.get("vessels"),
-                "avg_wait_hours": last.get("avg_wait_hours"),
-                "congestion_score": last.get("congestion_score"),
-            },
-            "source": {"src": last.get("src", "demo")},
-        }
+# ------------------------------------------------------------------------------
+# Calls & Processed
+# ------------------------------------------------------------------------------
 
-    # hard fallback
-    return {
-        "unlocode": unlocode.upper(),
-        "as_of": None,
-        "as_of_date": None,
-        "metrics": {"vessels": None, "avg_wait_hours": None, "congestion_score": None},
-        "source": {"src": "demo"},
-    }
-
-
-# ----------------------------
-# Calls & processed endpoints |
-# ----------------------------
-@router.get(
-    "/{unlocode}/calls",
-    response_model=List[_PortCallExpanded],
-    summary="Port Calls",
-    tags=["ports"],
-)
+@router.get("/{unlocode}/calls", response_model=List[_PortCallExpanded], summary="Port Calls", tags=["ports"])
 async def port_calls(
     unlocode: str,
     start_date: Optional[str] = None,
@@ -325,49 +263,15 @@ async def port_calls(
     limit: Optional[int] = 100,
     offset: Optional[int] = 0,
 ) -> List[_PortCallExpanded]:
-    """
-    Detailed port calls with pagination. Returns [] on errors.
-    """
-    # Parse dates
-    try:
-        if not start_date and not end_date:
-            end_date_obj = datetime.utcnow().date()
-            start_date_obj = end_date_obj - timedelta(days=30)
-        elif not start_date and end_date:
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-            start_date_obj = end_date_obj - timedelta(days=30)
-        elif start_date and not end_date:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_date_obj = start_date_obj + timedelta(days=30)
-        else:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-        if start_date_obj > end_date_obj:
-            raise HTTPException(status_code=422, detail="start_date must be before or equal to end_date")
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD")
+    start_d, end_d = _parse_date_range(start_date, end_date)
+    l, o = _validate_pagination(limit, offset)
 
-    # Validate pagination
-    limit = 100 if limit is None else limit
-    offset = 0 if offset is None else offset
-    if not (1 <= limit <= 1000):
-        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
-    if not (0 <= offset <= 100000):
-        raise HTTPException(status_code=422, detail="offset must be between 0 and 100000")
+    svc = _get_port_service()
+    if not svc:
+        return []
 
-    # Import service
     try:
-        from app.services.deps import PortService  # preferred
-    except Exception:
-        try:
-            from app.services.dependencies import PortService  # fallback
-        except Exception as _e:
-            logger.error("PortService import failed: %s", _e)
-            return []
-
-    svc = PortService()
-    try:
-        data = await svc.get_port_calls_with_pagination(unlocode, start_date_obj, end_date_obj, limit, offset)
+        data = await svc.get_port_calls_with_pagination(unlocode, start_d, end_d, l, o)
     except Exception as e:
         logger.error("get_port_calls_with_pagination failed for %s: %s", unlocode, e)
         return []
@@ -377,24 +281,23 @@ async def port_calls(
 
     return [
         _PortCallExpanded(
-            call_id=entry.call_id,
-            unlocode=entry.unlocode,
-            vessel_name=entry.vessel_name,
-            imo=entry.imo,
-            mmsi=entry.mmsi,
-            status=entry.status,
-            eta=entry.eta,
-            etd=entry.etd,
-            ata=entry.ata,
-            atb=entry.atb,
-            atd=entry.atd,
-            berth=entry.berth,
-            terminal=entry.terminal,
-            last_updated_at=entry.last_updated_at,
+            call_id=e.call_id,
+            unlocode=e.unlocode,
+            vessel_name=e.vessel_name,
+            imo=e.imo,
+            mmsi=e.mmsi,
+            status=e.status,
+            eta=e.eta,
+            etd=e.etd,
+            ata=e.ata,
+            atb=e.atb,
+            atd=e.atd,
+            berth=e.berth,
+            terminal=e.terminal,
+            last_updated_at=e.last_updated_at,
         )
-        for entry in data
+        for e in data
     ]
-
 
 @router.get(
     "/{unlocode}/calls/processed",
@@ -409,49 +312,15 @@ async def processed_port_calls(
     limit: Optional[int] = 100,
     offset: Optional[int] = 0,
 ) -> List[_PortCallProcessed]:
-    """
-    Processed port calls with derived metrics. Returns [] on errors.
-    """
-    # Parse dates
-    try:
-        if not start_date and not end_date:
-            end_date_obj = datetime.utcnow().date()
-            start_date_obj = end_date_obj - timedelta(days=30)
-        elif not start_date and end_date:
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-            start_date_obj = end_date_obj - timedelta(days=30)
-        elif start_date and not end_date:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_date_obj = start_date_obj + timedelta(days=30)
-        else:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-        if start_date_obj > end_date_obj:
-            raise HTTPException(status_code=422, detail="start_date must be before or equal to end_date")
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD")
+    start_d, end_d = _parse_date_range(start_date, end_date)
+    l, o = _validate_pagination(limit, offset)
 
-    # Validate pagination
-    limit = 100 if limit is None else limit
-    offset = 0 if offset is None else offset
-    if not (1 <= limit <= 1000):
-        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
-    if not (0 <= offset <= 100000):
-        raise HTTPException(status_code=422, detail="offset must be between 0 and 100000")
+    svc = _get_port_service()
+    if not svc:
+        return []
 
-    # Import service
     try:
-        from app.services.deps import PortService  # preferred
-    except Exception:
-        try:
-            from app.services.dependencies import PortService  # fallback
-        except Exception as _e:
-            logger.error("PortService import failed: %s", _e)
-            return []
-
-    svc = PortService()
-    try:
-        data = await svc.get_port_calls_with_pagination(unlocode, start_date_obj, end_date_obj, limit, offset)
+        data = await svc.get_port_calls_with_pagination(unlocode, start_d, end_d, l, o)
     except Exception as e:
         logger.error("get_port_calls_with_pagination failed for %s: %s", unlocode, e)
         return []
@@ -460,39 +329,28 @@ async def processed_port_calls(
         return []
 
     result: List[_PortCallProcessed] = []
-
-    for entry in data:
-        # Derived metrics
-        service_time = None
-        if entry.atb and entry.atd:
-            service_time = (entry.atd - entry.atb).total_seconds() / 3600.0
-
-        turnaround_time = None
-        if entry.ata and entry.atd:
-            turnaround_time = (entry.atd - entry.ata).total_seconds() / 3600.0
-
-        phase = None
-        if entry.ata and not entry.atb:
+    for e in data:
+        service_time = (e.atd - e.atb).total_seconds() / 3600.0 if e.atb and e.atd else None
+        turnaround = (e.atd - e.ata).total_seconds() / 3600.0 if e.ata and e.atd else None
+        if e.ata and not e.atb:
             phase = "waiting"
-        elif entry.atb and not entry.atd:
+        elif e.atb and not e.atd:
             phase = "berthing"
-        elif entry.atd:
+        elif e.atd:
             phase = "turnaround"
-
-        wait_hours = None
-        if entry.ata and entry.atb:
-            wait_hours = (entry.atb - entry.ata).total_seconds() / 3600.0
+        else:
+            phase = None
+        wait_hours = (e.atb - e.ata).total_seconds() / 3600.0 if e.ata and e.atb else None
 
         result.append(
             _PortCallProcessed(
-                call_id=entry.call_id,
-                unlocode=entry.unlocode,
+                call_id=e.call_id,
+                unlocode=e.unlocode,
                 phase=phase,
                 wait_hours=wait_hours,
                 service_time_hours=service_time,
-                turnaround_hours=turnaround_time,
-                updated_at=entry.last_updated_at,
+                turnaround_hours=turnaround,
+                updated_at=e.last_updated_at,
             )
         )
-
     return result
