@@ -4,7 +4,7 @@ import io
 import csv
 import logging
 from hashlib import sha256
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 
 from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query
@@ -30,14 +30,11 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# Helpers (shared)
+# Helpers
 # ------------------------------------------------------------------------------
 
-def _now_isoz() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
 def _demo_trend_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
-    """Deterministic demo when DB/override is absent."""
+    """Deterministic demo when DB/override is absent. ETag-stable."""
     today = datetime.utcnow().date()
     w = max(1, min(30, int(window or 7)))
     base_v, base_wait, base_score = 80, 26.0, 52
@@ -51,7 +48,8 @@ def _demo_trend_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
                 "avg_wait_hours": round(base_wait + ((i * 1.0) % 8), 1),
                 "congestion_score": base_score + ((i * 2) % 10),
                 "src": "demo",
-                "as_of": _now_isoz() if i == w - 1 else None,
+                # 固定 00:00:00Z，避免“当前时间”导致 ETag 抖动
+                "as_of": f"{d.isoformat()}T00:00:00Z" if i == w - 1 else None,
             }
         )
     return out
@@ -75,7 +73,7 @@ def _maybe_304(request: Request, headers: Dict[str, str]) -> Optional[Response]:
     return None
 
 def _select_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
-    """Prefer overrides; fall back to demo; ensure window enforced."""
+    """Prefer overrides; fall back to demo; enforce window."""
     ov = load_trend_override(unlocode, window) or {}
     pts = (ov.get("points") or []) or _demo_trend_points(unlocode, window)
     payload = enforce_window({"unlocode": unlocode.upper(), "points": pts}, window)
@@ -86,17 +84,23 @@ def _trend_csv(points: List[Dict[str, Any]]) -> str:
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(["date", "vessels", "avg_wait_hours", "congestion_score", "src", "as_of"])
     for p in points:
-        w.writerow([p.get("date"), p.get("vessels"), p.get("avg_wait_hours"),
-                    p.get("congestion_score"), p.get("src"), p.get("as_of")])
+        w.writerow([
+            p.get("date"),
+            p.get("vessels"),
+            p.get("avg_wait_hours"),
+            p.get("congestion_score"),
+            p.get("src"),
+            p.get("as_of"),
+        ])
     return buf.getvalue()
 
 def _latest_snapshot_flat(unlocode: str) -> Dict[str, Any]:
     """
-    Build snapshot in **legacy flat schema** (_PortOverview):
+    Legacy flat snapshot (_PortOverview):
     waiting_vessels <- last.vessels
     avg_wait_hours  <- last.avg_wait_hours
-    updated_at      <- last.as_of or last.date
-    其余旧字段暂留 None（P1 允许）。
+    updated_at      <- last.as_of or `${last.date}T00:00:00Z`
+    其它旧字段 P1 允许为空。
     """
     pts = _select_points(unlocode, window=7)
     last = latest_from_points(pts) if pts else None
@@ -109,18 +113,15 @@ def _latest_snapshot_flat(unlocode: str) -> Dict[str, Any]:
         "waiting_vessels": (last or {}).get("vessels"),
         "avg_wait_hours": (last or {}).get("avg_wait_hours"),
         "avg_berth_hours": None,
-        "updated_at": (last or {}).get("as_of") or (last or {}).get("date"),
-        # 附加：内部使用，不在 _PortOverview schema 中
+        "updated_at": (last or {}).get("as_of") or (f"{(last or {}).get('date')}T00:00:00Z" if last else None),
+        # 内部用字段（不在响应模型里）
         "_congestion_score": (last or {}).get("congestion_score"),
         "_src": (last or {}).get("src", "demo"),
         "_as_of_date": (last or {}).get("date"),
     }
 
 def _overview_csv_from_snapshot(snap: Dict[str, Any]) -> str:
-    """
-    CSV 列维持现有合同（与历史一致）：
-    unlocode, as_of, as_of_date, vessels, avg_wait_hours, congestion_score, src
-    """
+    # 与历史合同保持一致
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(["unlocode", "as_of", "as_of_date", "vessels", "avg_wait_hours", "congestion_score", "src"])
@@ -135,7 +136,7 @@ def _overview_csv_from_snapshot(snap: Dict[str, Any]) -> str:
     ])
     return buf.getvalue()
 
-def _parse_date_range(start_date: Optional[str], end_date: Optional[str]) -> Tuple[datetime.date, datetime.date]:
+def _parse_date_range(start_date: Optional[str], end_date: Optional[str]) -> Tuple[date, date]:
     try:
         if not start_date and not end_date:
             end_d = datetime.utcnow().date()
@@ -183,7 +184,7 @@ def _get_port_service():
 @router.get("/{unlocode}/overview")
 async def get_overview(
     unlocode: str,
-    request: Request,                                  # non-default before defaults
+    request: Request,                                  # 非默认参数放前面
     format: str = Query("csv", pattern="^(json|csv)$"),
 ):
     snap = _latest_snapshot_flat(unlocode)
