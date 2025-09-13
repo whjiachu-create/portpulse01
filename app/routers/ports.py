@@ -48,8 +48,8 @@ def _demo_trend_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
                 "avg_wait_hours": round(base_wait + ((i * 1.0) % 8), 1),
                 "congestion_score": base_score + ((i * 2) % 10),
                 "src": "demo",
-                # 固定 00:00:00Z，避免“当前时间”导致 ETag 抖动
-                "as_of": f"{d.isoformat()}T00:00:00Z" if i == w - 1 else None,
+                # 固定 00:00:00Z，避免使用“当前时间”导致 ETag 抖动
+                "as_of": (f"{d.isoformat()}T00:00:00Z" if i == w - 1 else None),
             }
         )
     return out
