@@ -1,19 +1,16 @@
 # app/routers/admin_backfill.py
 from __future__ import annotations
-import os, hmac, logging, asyncio
+import os, hmac, logging, asyncio, importlib
 from datetime import date, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 
-from fastapi import (
-    APIRouter, HTTPException, Request, Depends, Query
-)
+from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["admin"])
 
-# --- 基础配置 ---------------------------------------------------------------
-
+# -------------------- Core30 baseline --------------------
 _DEFAULT_CORE30 = [
     "USLAX","USLGB","USNYC","USSAV","USCHS","USORF","USHOU","USSEA","USOAK","USMIA",
     "NLRTM","BEANR","DEHAM","DEBRV","FRLEH","GBFXT","GBLGP","ESVLC","ESALG","GRPIR",
@@ -27,27 +24,26 @@ def _core30() -> List[str]:
     return _DEFAULT_CORE30
 
 def _max_days() -> int:
-    """允许的最大天数跨度（含首尾）。默认 7，可通过 BACKFILL_MAX_DAYS=30 放宽。"""
+    """Inclusive range guard; default 7, overridable via BACKFILL_MAX_DAYS."""
     try:
         v = int(os.getenv("BACKFILL_MAX_DAYS", "7"))
         return max(1, v)
     except Exception:
         return 7
 
-def _secrets_from_env() -> set[str]:
-    s = set()
-    bf = os.getenv("BACKFILL_SECRET", "")
-    adm = os.getenv("ADMIN_SECRET", "")
-    if bf:  s.add(bf)
-    if adm: s.add(adm)
+def _secrets_from_env() -> Set[str]:
+    s: Set[str] = set()
+    for k in ("BACKFILL_SECRET", "ADMIN_SECRET"):
+        v = os.getenv(k, "")
+        if v:
+            s.add(v)
     return s
 
 def _verify_secret(req: Request) -> bool:
     """
-    从 Header/Query 里拿密钥并校验：
-    - Headers: X-Admin-Secret 或 X-Backfill-Secret
-    - Query:   ?secret= 或 ?token=
-    同时支持 BACKFILL_SECRET / ADMIN_SECRET。
+    Accept secret from:
+      - Headers: X-Admin-Secret / X-Backfill-Secret
+      - Query:   ?secret= / ?token=
     """
     secrets = _secrets_from_env()
     if not secrets:
@@ -60,14 +56,53 @@ def _verify_secret(req: Request) -> bool:
         or req.query_params.get("token")
         or ""
     )
-
-    ok = any(hmac.compare_digest(provided, s) for s in secrets)
-    if not ok:
+    if not any(hmac.compare_digest(provided, s) for s in secrets):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
-# --- 数据模型 ---------------------------------------------------------------
+# -------------------- optional ingest wiring --------------------
+def _get_ingest_fn():
+    """
+    Optional real ETL hook (sync mode):
+        app/services/ingesters.py   ->  async def ingest_port_day(port: str, day: date) -> dict
+    When absent, sync calls will return a hint and never 500.
+    """
+    try:
+        mod = importlib.import_module("app.services.ingesters")
+        fn = getattr(mod, "ingest_port_day", None)
+        return fn if callable(fn) else None
+    except Exception:
+        return None
 
+async def _backfill_one(port: str, day: date, sync: bool) -> Dict:
+    if sync:
+        ingest = _get_ingest_fn()
+        if ingest is None:
+            logger.warning("INGEST_FN missing: port=%s day=%s", port, day)
+            return {"port": port, "date": day.isoformat(), "queued": False, "synced": False,
+                    "hint": "INGEST_FN not wired"}
+        try:
+            res = await ingest(port, day)
+            return {"port": port, "date": day.isoformat(), "queued": False, "synced": True, "result": res}
+        except Exception as e:
+            logger.exception("ingest_port_day failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"ingest failed: {e}")
+    else:
+        # async enqueue placeholder (no real queue wired yet)
+        await asyncio.sleep(0)
+        logger.info("Backfill queued (noop): port=%s day=%s", port, day)
+        return {"port": port, "date": day.isoformat(), "queued": True}
+
+def _build_plan(ports: List[str], start: date, end: date) -> List[Dict]:
+    plan: List[Dict] = []
+    d = start
+    while d <= end:
+        for p in ports:
+            plan.append({"port": p, "date": d.isoformat()})
+        d += timedelta(days=1)
+    return plan
+
+# -------------------- models --------------------
 class BackfillReq(BaseModel):
     ports: List[str]
     start: date
@@ -94,96 +129,112 @@ class BackfillReq(BaseModel):
             raise ValueError(f"max {_max_days()} days range (inclusive)")
         return v
 
-# --- 业务占位（接入你们真实补采） --------------------------------------------
-
-async def _backfill_one(port: str, day: date) -> Dict:
-    """
-    TODO: 在这里串真实补采逻辑（调用内部 ingest / 触发队列 / 刷新任务等）。
-    先放一个占位实现：仅打印日志并返回 queued=True。
-    """
-    await asyncio.sleep(0)
-    logger.info("Backfill queued: port=%s day=%s", port, day.isoformat())
-    return {"port": port, "date": day.isoformat(), "queued": True}
-
-def _build_plan(ports: List[str], start: date, end: date) -> List[Dict]:
-    plan: List[Dict] = []
-    d = start
-    while d <= end:
-        for p in ports:
-            plan.append({"port": p, "date": d.isoformat()})
-        d += timedelta(days=1)
-    return plan
-
-# --- 路由（两种形态：JSON 与 Path 兼容） -------------------------------------
-
+# -------------------- routes --------------------
 @router.post("/backfill", summary="Batch backfill (JSON body)")
-async def backfill_json(req: BackfillReq, _: bool = Depends(_verify_secret)):
+async def backfill_json(
+    req: BackfillReq,
+    _: bool = Depends(_verify_secret),
+    sync: bool = Query(default=False, description="Execute synchronously (for testing)"),
+):
     """
-    JSON 形式：
+    Example:
+    POST /v1/admin/backfill?sync=1
     {
-      "ports": ["USLAX","SGSIN"],
-      "start": "2025-08-15",
-      "end":   "2025-08-21",
-      "dry_run": true
+      "ports": ["USLAX", "SGSIN"],
+      "start": "2025-09-01",
+      "end":   "2025-09-07",
+      "dry_run": false
     }
-    - 端侧只需把 dry_run=false 即可真实入队
-    - 最大跨度由 BACKFILL_MAX_DAYS 控制（默认 7）
     """
     plan = _build_plan(req.ports, req.start, req.end)
-
     if req.dry_run:
-        return {"accepted": False, "dry_run": True, "count": len(plan), "plan": plan}
+        return {"accepted": False, "dry_run": True, "count": len(plan), "plan_len": len(plan)}
+
+    if sync:
+        results = [await _backfill_one(it["port"], date.fromisoformat(it["date"]), True) for it in plan]
+        return {"accepted": True, "count": len(results), "synced": True, "results": results}
 
     async def _enqueue_all():
         await asyncio.gather(*[
-            _backfill_one(it["port"], date.fromisoformat(it["date"])) for it in plan
+            _backfill_one(it["port"], date.fromisoformat(it["date"]), False) for it in plan
         ])
-
     asyncio.create_task(_enqueue_all())
-    return {"accepted": True, "count": len(plan)}
+    return {"accepted": True, "count": len(plan), "synced": False}
 
-@router.post("/backfill/{unlocode}", summary="Backfill (path style, compatible)")
+@router.post("/backfill/{unlocode}", summary="Backfill (range via from/to)")
 async def backfill_path_style(
     unlocode: str,
     _: bool = Depends(_verify_secret),
     from_: Optional[str] = Query(default=None, alias="from"),
     to: Optional[str] = Query(default=None, alias="to"),
-    dry_run: bool = Query(default=False),
+    sync: bool = Query(default=False),
 ):
     """
-    兼容你之前的脚本调用：
-    POST /v1/admin/backfill/USLAX?secret=...&from=YYYY-MM-DD&to=YYYY-MM-DD&dry_run=0
-    - 无需 JSON body
-    - 同样受 BACKFILL_MAX_DAYS 限制（默认 7）
+    Example:
+    POST /v1/admin/backfill/USLAX?from=2025-09-01&amp;to=2025-09-07&amp;sync=1
     """
+    if not from_ or not to:
+        raise HTTPException(status_code=422, detail="Invalid from/to (YYYY-MM-DD)")
     try:
-        if not from_ or not to:
-            raise ValueError("missing from/to")
         start = date.fromisoformat(from_)
         end = date.fromisoformat(to)
     except Exception:
         raise HTTPException(status_code=422, detail="Invalid from/to (YYYY-MM-DD)")
 
-    # 范围校验（含首尾）
     if end < start:
         raise HTTPException(status_code=422, detail="end must be >= start")
     if (end - start).days + 1 > _max_days():
         raise HTTPException(status_code=422, detail=f"max {_max_days()} days range (inclusive)")
 
-    # 端口校验按 Core30（保持与 JSON 入口一致）
-    ports = [unlocode.strip().upper()]
-    if ports[0] not in set(_core30()):
-        raise HTTPException(status_code=400, detail=f"port not allowed: {ports[0]}")
+    code = unlocode.strip().upper()
+    if code not in set(_core30()):
+        raise HTTPException(status_code=400, detail=f"port not allowed: {code}")
 
-    plan = _build_plan(ports, start, end)
-
-    if dry_run:
-        return {"accepted": False, "dry_run": True, "count": len(plan), "plan": plan}
+    plan = _build_plan([code], start, end)
+    if sync:
+        results = [await _backfill_one(code, date.fromisoformat(it["date"]), True) for it in plan]
+        return {"accepted": True, "count": len(results), "synced": True, "results": results}
 
     async def _enqueue_all():
         await asyncio.gather(*[
-            _backfill_one(it["port"], date.fromisoformat(it["date"])) for it in plan
+            _backfill_one(code, date.fromisoformat(it["date"]), False) for it in plan
         ])
-
     asyncio.create_task(_enqueue_all())
-    return {"accepted": True, "count": len(plan)}
+    return {"accepted": True, "count": len(plan), "synced": False}
+
+@router.post("/backfill/ports/{unlocode}", summary="Backfill by days (compat for legacy scripts)")
+async def backfill_days_style(
+    unlocode: str,
+    _: bool = Depends(_verify_secret),
+    days: int = Query(default=7, ge=1, description="Inclusive, capped by BACKFILL_MAX_DAYS"),
+    sync: bool = Query(default=False),
+):
+    """
+    Example:
+    POST /v1/admin/backfill/ports/USLAX?days=7&amp;sync=1
+    """
+    days = min(days, _max_days())
+    code = unlocode.strip().upper()
+    if code not in set(_core30()):
+        raise HTTPException(status_code=400, detail=f"port not allowed: {code}")
+
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    plan = _build_plan([code], start, end)
+
+    if sync:
+        results = [await _backfill_one(code, date.fromisoformat(it["date"]), True) for it in plan]
+        return {
+            "accepted": True,
+            "count": len(results),
+            "synced": True,
+            "range": f"{start}..{end}",
+            "results": results,
+        }
+
+    async def _enqueue_all():
+        await asyncio.gather(*[
+            _backfill_one(code, date.fromisoformat(it["date"]), False) for it in plan
+        ])
+    asyncio.create_task(_enqueue_all())
+    return {"accepted": True, "count": len(plan), "synced": False, "range": f"{start}..{end}"}
