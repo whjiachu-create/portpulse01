@@ -28,8 +28,31 @@ if TYPE_CHECKING:
 
 router = APIRouter(dependencies=[Depends(require_api_key)], )
 
+
 # 添加logger
 logger = logging.getLogger(__name__)
+
+# Demo trend fallback for empty/absent data
+def _demo_trend_points(unlocode: str, window: int) -> List[Dict]:
+    """
+    Deterministic fallback series when no override/DB is present.
+    Keeps contract stable for JSON/CSV/HEAD + strong ETag logic.
+    """
+    today = datetime.utcnow().date()
+    w = max(1, min(30, int(window or 7)))
+    base_v, base_wait, base_score = 80, 26.0, 52
+    pts: List[Dict] = []
+    for i in range(w):
+        d = today - timedelta(days=w - 1 - i)
+        pts.append({
+            "date": d.isoformat(),
+            "vessels": base_v + ((i * 3) % 15),
+            "avg_wait_hours": round(base_wait + ((i * 1.0) % 8), 1),
+            "congestion_score": base_score + ((i * 2) % 10),
+            "src": "demo",
+            "as_of": None if i < w - 1 else datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        })
+    return pts
 
 def _build_trend_csv_and_headers(unlocode: str, points: List[Dict]) -> Tuple[str, dict]:
     buf = io.StringIO()
@@ -61,14 +84,30 @@ def _build_overview_csv_and_headers(unlocode: str) -> Tuple[str, dict]:
     """
     # 尝试从覆盖层构造 snapshot；否则给出安全兜底
     snap = snapshot_from_override(unlocode)
-    if not isinstance(snap, dict):
-        snap = {
-            "unlocode": unlocode.upper(),
-            "as_of": None,
-            "as_of_date": None,
-            "metrics": {"vessels": None, "avg_wait_hours": None, "congestion_score": None},
-            "source": {"src": "demo"},
-        }
+    if not isinstance(snap, dict) or not snap.get("metrics"):
+        # build from demo fallback last point
+        pts = _demo_trend_points(unlocode, 7)
+        last = pts[-1] if pts else None
+        if last:
+            snap = {
+                "unlocode": unlocode.upper(),
+                "as_of": last.get("as_of"),
+                "as_of_date": last.get("date"),
+                "metrics": {
+                    "vessels": last.get("vessels"),
+                    "avg_wait_hours": last.get("avg_wait_hours"),
+                    "congestion_score": last.get("congestion_score"),
+                },
+                "source": {"src": last.get("src", "demo")},
+            }
+        else:
+            snap = {
+                "unlocode": unlocode.upper(),
+                "as_of": None,
+                "as_of_date": None,
+                "metrics": {"vessels": None, "avg_wait_hours": None, "congestion_score": None},
+                "source": {"src": "demo"},
+            }
 
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
@@ -156,6 +195,10 @@ async def port_trend(unlocode: str, window: int = Query(7, ge=1, le=30), format:
     if window and len(points) > window:
         points = points[-window:]
 
+    # Fallback demo series if no data
+    if not points:
+        points = _demo_trend_points(unlocode, window)
+
     if format.lower() == "json":
         # 返回统一结构 {unlocode, points}，并做二次窗口兜底
         payload = {"unlocode": unlocode.upper(), "points": points}
@@ -180,10 +223,10 @@ async def head_port_trend(unlocode: str, window: int = Query(7, ge=1, le=30), fo
     # 仅用于 ETag/304 触发，默认走 csv
 
     ov = load_trend_override(unlocode, window)
-    payload = enforce_window(
-        {"unlocode": unlocode.upper(), "points": (ov or {}).get("points", [])},
-        window
-    )
+    pts = (ov or {}).get("points", [])
+    if not pts:
+        pts = _demo_trend_points(unlocode, window)
+    payload = enforce_window({"unlocode": unlocode.upper(), "points": pts}, window)
     csv_text, headers = _build_trend_csv_and_headers(unlocode, payload["points"])
     inm = request.headers.get("if-none-match") if request else None
     if inm:
@@ -200,7 +243,23 @@ async def port_snapshot(unlocode: str) -> Dict[str, Any]:
     if ov_snap:
         return ov_snap
 
-    # 覆盖不存在时的保底（与线上示例一致，避免 500）
+    # Build from demo fallback last point
+    pts = _demo_trend_points(unlocode, 7)
+    last = pts[-1] if pts else None
+    if last:
+        return {
+            "unlocode": unlocode.upper(),
+            "as_of": last.get("as_of"),
+            "as_of_date": last.get("date"),
+            "metrics": {
+                "vessels": last.get("vessels"),
+                "avg_wait_hours": last.get("avg_wait_hours"),
+                "congestion_score": last.get("congestion_score"),
+            },
+            "source": {"src": last.get("src", "demo")},
+        }
+
+    # hard fallback (shouldn't hit)
     return {
         "unlocode": unlocode.upper(),
         "as_of": None,
