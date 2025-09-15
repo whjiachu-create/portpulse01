@@ -1,0 +1,15 @@
+name: API Smoke
+on:
+  push:
+  schedule:
+    - cron: "15 * * * *"   # 每小时第15分钟跑一次
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y jq curl
+      - name: Run smoke checks
+        run: ./scripts/smoke_api.sh --base https://api.useportpulse.com
+        env:
+          PORTPULSE_KEY: ${{ secrets.PORTPULSE_KEY }}
