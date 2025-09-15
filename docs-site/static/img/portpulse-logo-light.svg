@@ -1,0 +1,9 @@
+<!-- PortPulse brand icon (unified): deep navy + cyan ring + 'P' + small wave -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <circle cx="128" cy="128" r="112" fill="#0B2740" stroke="#0EA5E9" stroke-width="16"/>
+  <!-- Stylized 'P' -->
+  <path fill="#FFFFFF" d="M96 64h44c24 0 40 16 40 36s-16 36-40 36h-20v56H96V64zm24 24v24h20c10 0 16-6 16-12 0-6-6-12-16-12h-20z"/>
+  <!-- subtle wave to hint maritime -->
+  <path fill="#0EA5E9" opacity=".9"
+        d="M64 168c18 12 38 18 64 18s46-6 64-18c-18 22-43 36-64 36s-46-14-64-36z"/>
+</svg>

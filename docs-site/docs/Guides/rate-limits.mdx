@@ -1,0 +1,163 @@
+---
+id: rate-limits
+title: Rate limits & throttling
+sidebar_label: Rate limits
+description: How PortPulse enforces short‑term rate limits and monthly quotas, which headers we return, and how to implement safe retries with backoff.
+---
+
+# Overview
+
+To keep the platform fast and fair for all customers, PortPulse enforces **short‑term rate limits** (per minute) and **monthly quotas** (per plan). Limits are **primarily enforced per API key**; we also apply light network‑level protections to prevent abuse.
+
+:::tip TL;DR
+- **Default burstable limit:** **60 requests/minute** per key, with short bursts accommodated.
+- **On limit breach:** HTTP **429 Too Many Requests** + `Retry-After` header (seconds).
+- **Monthly quota:** enforced by plan (Lite/Starter/Pro). You can ask to raise limits.
+- **Headers:** we expose `X-RateLimit-*` response headers so you can monitor usage.
+- **Best practice:** implement **exponential backoff with jitter** and respect `Retry-After`.
+:::
+
+## What is limited?
+
+- **All read endpoints** under `/v1/**` are counted towards the per‑minute limit and monthly quota.
+- Limits are **per API key**. We also maintain **per‑IP safety nets** to protect the service; these rarely trigger for normal use.
+- **Conditional GETs** that return **304 Not Modified** still count as requests for RPM/quota purposes (but save bandwidth). Use `ETag` to avoid re‑downloading large CSVs.
+
+## Default policies
+
+### Per‑minute limits (RPM)
+- **Base window:** 60 requests per minute per key.
+- **Burst tolerance:** short bursts above 60 RPM are allowed for a few seconds; if sustained, we return 429.
+- **Concurrency guidance:** keep **≤10 in‑flight requests** per key to avoid synchronized bursts.
+
+### Monthly quotas (by plan)
+- **Lite:** up to **0.5M** requests / month
+- **Starter:** up to **2M** requests / month
+- **Pro:** **5–10M** requests / month (contracted)
+
+> Need more? Contact us at **support@useportpulse.com** with your use case and expected peak QPS.
+
+## Response headers
+
+Every successful response includes introspection headers:
+
+```
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 42
+X-RateLimit-Reset: 1736892345
+X-Request-Id: c4f6c7a0-6a1b-4a29-96b2-3f6bb7c6abcd
+```
+
+- `X-RateLimit-Limit`: your effective per‑minute ceiling.
+- `X-RateLimit-Remaining`: remaining requests in the current rolling window.
+- `X-RateLimit-Reset`: **Unix epoch seconds** when the window resets (approximate).
+- `X-Request-Id`: unique id for this request. Include it when contacting support.
+
+When throttled, we add:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 8
+Content-Type: application/json
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1736892353
+X-Request-Id: 2b7377de-bf3b-4c5e-9e3a-0a2a7a64ec11
+
+{
+  "code": "rate_limited",
+  "message": "Too many requests. Please retry after 8 seconds.",
+  "request_id": "2b7377de-bf3b-4c5e-9e3a-0a2a7a64ec11",
+  "hint": "Respect the Retry-After header and implement exponential backoff."
+}
+```
+
+See also **Errors**: [/docs/Guides/errors](/docs/Guides/errors).
+
+## How to avoid throttling
+
+1. **Reuse connections** and enable **HTTP keep‑alive**.
+2. **Batch and paginate**: prefer `limit`/`offset` over many tiny calls.
+3. **Cache aggressively**:
+   - Honor `Cache-Control` headers.
+   - Use `ETag` + `If-None-Match` for large CSV endpoints to leverage **304**.
+4. **Stagger jobs**: avoid firing hundreds of requests at the same millisecond.
+5. **Implement retries with jitter** on 429/5xx and always respect `Retry-After`.
+
+## Code examples
+
+### cURL
+
+```bash
+# Simple retry loop on 429 using bash (demo only)
+for i in {1..5}; do
+  http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+    -H "X-API-Key: $PORTPULSE_API_KEY" \
+    "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=json")
+  if [ "$http_code" = "429" ]; then
+    retry_after=$(jq -r '."retry-after" // empty' /tmp/resp.json 2>/dev/null || echo "")
+    sleep ${retry_after:-5}
+  else
+    cat /tmp/resp.json && break
+  fi
+done
+```
+
+### JavaScript (fetch)
+
+```ts
+async function getWithBackoff(url: string, apiKey: string) {
+  let delay = 500; // ms
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const res = await fetch(url, {
+      headers: { 'X-API-Key': apiKey },
+      keepalive: true,
+    });
+    if (res.status !== 429) return res;
+    const ra = res.headers.get('Retry-After');
+    const ms = ra ? Number(ra) * 1000 : delay;
+    await new Promise((r) => setTimeout(r, ms + Math.random() * 250));
+    delay = Math.min(delay * 2, 8000);
+  }
+  throw new Error('Exceeded retry budget');
+}
+```
+
+### Python (requests)
+
+```py
+import time, random, requests
+
+def get_with_backoff(url: str, api_key: str, attempts: int = 6):
+    delay = 0.5
+    for i in range(attempts):
+        r = requests.get(url, headers={'X-API-Key': api_key}, timeout=15)
+        if r.status_code != 429:
+            return r
+        ra = r.headers.get('Retry-After')
+        sleep_s = float(ra) if ra else delay
+        time.sleep(sleep_s + random.random() * 0.25)
+        delay = min(delay * 2, 8)
+    raise RuntimeError('Exceeded retry budget')
+```
+
+## FAQ
+
+**Does a 304 (Not Modified) count toward my limit?**  
+Yes. Every request counts towards RPM and the monthly quota, regardless of status. 304 saves bandwidth but not request count.
+
+**Are limits applied per IP or per key?**  
+Primarily **per API key**. We also maintain IP‑based safety nets to stop obvious abuse.
+
+**Do heavier endpoints have different weights?**  
+We may apply lower internal ceilings to unusually heavy endpoints, but the public header values always reflect your effective limit.
+
+**How can I get a higher limit?**  
+Email **support@useportpulse.com** with your expected QPS, burst profile, and endpoints. Pro plans and enterprise contracts can be tuned.
+
+**Where can I check service health?**  
+See **SLA & Status**: [/docs/Ops/sla-status](/docs/Ops/sla-status).
+
+---
+
+If you believe you were throttled in error, include the **`X-Request-Id`** from the response when you contact support so we can investigate.

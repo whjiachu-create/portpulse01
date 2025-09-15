@@ -1,0 +1,196 @@
+---
+id: csv-etag
+title: CSV & ETag/304
+sidebar_label: CSV & ETag/304
+description: Efficiently sync CSV endpoints using strong ETag and 304 Not Modified.
+---
+
+CSV endpoints support **strong ETag** and `304 Not Modified` so you can skip re-downloading unchanged files. This guide shows the headers we return and copy‑paste examples for Bash, Node.js, and Python.
+
+## Endpoints that support CSV
+
+- `GET /v1/ports/{UNLOCODE}/trend?window=30d&format=csv`
+- `GET /v1/hs/{code}/imports?format=csv` _(beta)_
+
+> The JSON variants also exist (remove `format=csv`). ETag/304 optimizations are aimed at CSV bulk syncs.
+
+## Response headers reference
+
+| Header | Example | Meaning |
+| --- | --- | --- |
+| `Cache-Control` | `public, max-age=300` | Edge/browser may cache for up to 300s. |
+| `ETag` | `"a1b2c3d4e5"` | **Strong ETag** for the whole file. Changes on any byte change. |
+| `Last-Modified` | `Sun, 14 Sep 2025 10:30:00 GMT` | Last time the CSV content changed. |
+| `Content-Type` | `text/csv; charset=utf-8` | CSV MIME type. |
+| `Content-Disposition` | `attachment; filename="USLAX_trend_30d.csv"` | Present when you request a download. |
+| `x-request-id` | `req_01J...` | Request trace id shown in logs/support. |
+| `X-RateLimit-Remaining` | `597` | Remaining requests in the current window. |
+
+:::tip TL;DR
+1) `HEAD` to read the `ETag`. 2) `GET` with `If-None-Match` next time. You’ll get `304` when unchanged (no body).
+:::
+
+## Two-step sync pattern
+
+### 1) Get the current ETag (HEAD)
+
+```bash
+curl -I \
+  -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&amp;format=csv"
+```
+
+Look for a header like:
+
+```
+ETag: "a1b2c3d4e5"
+```
+
+### 2) Conditional GET with `If-None-Match`
+
+```bash
+# Reuse the exact ETag value INCLUDING the quotes
+curl -H "X-API-Key: DEMO_KEY" \
+     -H 'If-None-Match: "a1b2c3d4e5"' \
+     -OJ \
+  "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&amp;format=csv"
+```
+
+- If the file **changed** → response `200 OK` with a new CSV body and a new `ETag`.
+- If the file **did not change** → response `304 Not Modified` (no body). Keep your existing file.
+
+:::note About rate limits
+`304` responses **still count** toward your rate limit. Schedule HEAD/GET at sensible intervals and prefer caching windows (`max-age=300`). See **Rate limits** for details.
+:::
+
+## Copy‑paste automation examples
+
+### Bash (store and reuse ETag)
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+API="https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&amp;format=csv"
+HEADERS=(-H "X-API-Key: DEMO_KEY")
+ETAG_FILE=".etag.uslax.trend.30d"
+OUT="USLAX_trend_30d.csv"
+
+# Read previous ETag if any
+ETAG=""
+if [[ -f "$ETAG_FILE" ]]; then
+  ETAG=$(cat "$ETAG_FILE")
+fi
+
+# Conditional GET
+if [[ -n "$ETAG" ]]; then
+  CODE=$(curl -sS -w "%{http_code}" -o "$OUT" "${HEADERS[@]}" \
+    -H "If-None-Match: $ETAG" "$API")
+else
+  CODE=$(curl -sS -w "%{http_code}" -o "$OUT" "${HEADERS[@]}" "$API")
+fi
+
+# If new content, capture the fresh ETag from response headers
+if [[ "$CODE" == "200" ]]; then
+  NEWE=$(curl -sI "${HEADERS[@]}" "$API" | tr -d '\r' | awk -F': ' '/^ETag:/{print $2}')
+  echo "$NEWE" > "$ETAG_FILE"
+  echo "Downloaded new CSV → $OUT (ETag $NEWE)"
+elif [[ "$CODE" == "304" ]]; then
+  echo "Unchanged (304). Kept existing $OUT"
+else
+  echo "Unexpected HTTP $CODE" >&2
+  exit 1
+fi
+```
+
+### Node.js (fetch)
+
+```ts
+import fs from "node:fs/promises";
+const API = "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=csv";
+const ETAG_FILE = ".etag.uslax.trend.30d";
+const OUT = "USLAX_trend_30d.csv";
+
+async function readETag() {
+  try { return await fs.readFile(ETAG_FILE, "utf8"); } catch { return ""; }
+}
+
+async function writeETag(v: string) {
+  await fs.writeFile(ETAG_FILE, v, "utf8");
+}
+
+async function syncCsv() {
+  const etag = (await readETag()).trim();
+  const headers: Record<string,string> = {"X-API-Key":"DEMO_KEY"};
+  if (etag) headers["If-None-Match"] = etag; // keep quotes
+
+  const res = await fetch(API, { headers });
+  if (res.status === 304) {
+    console.log("Unchanged (304).");
+    return;
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const body = await res.text();
+  await fs.writeFile(OUT, body, "utf8");
+  const newEtag = res.headers.get("etag");
+  if (newEtag) await writeETag(newEtag);
+  console.log(`Saved ${OUT} (ETag ${newEtag ?? "n/a"})`);
+}
+
+syncCsv().catch(err => { console.error(err); process.exit(1); });
+```
+
+### Python (requests)
+
+```python
+import os, requests
+
+API = "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=csv"
+ETAG_FILE = ".etag.uslax.trend.30d"
+OUT = "USLAX_trend_30d.csv"
+
+etag = ""
+if os.path.exists(ETAG_FILE):
+    with open(ETAG_FILE, "r", encoding="utf-8") as f:
+        etag = f.read().strip()
+
+headers = {"X-API-Key": "DEMO_KEY"}
+if etag:
+    headers["If-None-Match"] = etag  # keep quotes
+
+r = requests.get(API, headers=headers, timeout=30)
+
+if r.status_code == 304:
+    print("Unchanged (304).")
+    raise SystemExit(0)
+
+r.raise_for_status()
+with open(OUT, "w", encoding="utf-8", newline="") as f:
+    f.write(r.text)
+
+new_etag = r.headers.get("ETag")
+if new_etag:
+    with open(ETAG_FILE, "w", encoding="utf-8") as f:
+        f.write(new_etag)
+
+print(f"Saved {OUT} (ETag {new_etag})")
+```
+
+## FAQs
+
+**Do you return strong or weak ETags?**  
+Strong. Use the value **including the quotes** as-is in `If-None-Match`.
+
+**Is `If-Modified-Since` supported?**  
+Yes, but we recommend ETag for exact byte comparison.
+
+**How often should I poll?**  
+Respect caching (`max-age=300`). For most cases, a 5–10 minute cadence is sufficient; align with your rate limit.
+
+**Does `304` cost requests?**  
+Yes. A `304` still counts toward your rate limit window.
+
+---
+
+Need help or seeing unexpected cache behavior? Share your `x-request-id` and the exact headers you sent/received with support.

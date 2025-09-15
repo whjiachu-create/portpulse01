@@ -1,0 +1,66 @@
+---
+title: Field Dictionary
+sidebar_label: Field Dictionary
+description: Definitions, units, ranges and semantics for core fields returned by the PortPulse API v1.
+---
+
+## Overview
+This page lists canonical fields returned by the API. Meanings and units are stable for **/v1**. For how changes are introduced, see [Versioning & Deprecations](/docs/Guides/versioning).
+
+> **Tip**: Field names are case-sensitive. Unless noted, arrays are returned in deterministic (ascending time) order.
+
+## Common metadata
+| Field | Type | Unit / Range | Notes |
+|---|---|---|---|
+| `as_of` | string (RFC 3339) | timestamp | Measurement time for the resource. Example: `"2025-09-14T10:30:00Z"` |
+| `unlocode` | string | UN/LOCODE | Port identifier, e.g. `USLAX`. |
+| `congestion_score` | number | 0–1 (unitless) | Normalized congestion indicator (`0`=free flow, `1`=severe). |
+
+### Example (common envelope)
+```json
+{
+  "as_of": "2025-09-14T10:30:00Z",
+  "unlocode": "USLAX",
+  "congestion_score": 0.62
+}
+```
+
+## Port trend rows (`GET /v1/ports/{unlocode}/trend`)
+Each item represents a daily aggregate.
+
+| Field | Type | Unit / Range | Notes |
+|---|---|---|---|
+| `date` | string | `YYYY-MM-DD` | Local port day boundary. |
+| `avg_wait_hours` | number | hours | Average vessel waiting time (>= 0). |
+| `vessel_count` | integer | count | Number of vessels included in the day’s calculation. |
+
+### Example
+```json
+[
+  { "date": "2025-09-10", "avg_wait_hours": 18.4, "vessel_count": 73 },
+  { "date": "2025-09-11", "avg_wait_hours": 17.2, "vessel_count": 69 }
+]
+```
+
+## Error envelope
+All error responses share the following structure. See details on error codes in [Errors](/docs/errors).
+
+```json
+{
+  "code": "string",
+  "message": "string",
+  "request_id": "uuid",
+  "hint": "string"
+}
+```
+
+## Conventions
+- **Time & zones**: All timestamps are UTC (`Z`) unless otherwise specified. Daily `date` values are local to the port.
+- **Missing vs. null**: A missing field means "not applicable"; a present `null` means "unknown" at the time of computation.
+- **Numeric precision**: Decimal fields are returned with up to 3 fractional digits; do not assume fixed precision.
+- **Booleans**: When present, boolean flags are strictly `true`/`false` (never `1`/`0`).
+
+## Related
+- [Rate limits](/docs/Guides/rate-limits)
+- [CSV export & ETag](/docs/csv-etag)
+- [Versioning & deprecations](/docs/Guides/versioning)

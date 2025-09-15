@@ -1,0 +1,22 @@
+{
+  "info": {
+    "name": "PortPulse API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "USLAX trend (30d)",
+      "request": {
+        "method": "GET",
+        "header": [{"key": "X-API-Key", "value": "DEMO_KEY"}],
+        "url": {
+          "raw": "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d",
+          "protocol": "https",
+          "host": ["api","useportpulse","com"],
+          "path": ["v1","ports","USLAX","trend"],
+          "query": [{"key":"window","value":"30d"}]
+        }
+      }
+    }
+  ]
+}

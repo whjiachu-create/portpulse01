@@ -1,0 +1,22 @@
+:root {
+  --pp-primary: #0d9488;
+}
+
+.hero--primary {
+  background: linear-gradient(135deg,#0d9488 0%,#0ea5e9 100%) !important;
+}
+
+.container .grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 996px) {
+  .container .grid { grid-template-columns: 1fr; }
+}
+
+.navbar__logo img {
+  height: 28px;
+  width: auto;
+}

@@ -1,0 +1,122 @@
+---
+id: insomnia
+title: Insomnia Export
+sidebar_label: Insomnia
+---
+
+Download and import into Insomnia:
+
+- **[portpulse-insomnia.json](/insomnia/portpulse-insomnia.json)**
+
+---
+title: Insomnia (API Client)
+sidebar_label: Insomnia
+description: Import the PortPulse API collection into Insomnia, set environment variables, and send your first request.
+---
+
+## Overview
+
+This guide walks you through importing the PortPulse Insomnia collection, setting the base URL and API key as environment variables, and sending your first request.
+
+:::tip Prerequisites
+- **Insomnia** 9.x or newer  
+- A **PortPulse API key** with the necessary permissions  
+- Your base URL (e.g. `https://api.useportpulse.com`)
+:::
+
+---
+
+## 1) Download the Insomnia collection
+
+- **Collection**: [portpulse-insomnia.json](/insomnia/portpulse-insomnia.json)  
+  Save the file locally.
+
+&gt; If your team publishes an updated collection, simply re-import the new JSON and choose **Replace** when Insomnia asks.
+
+---
+
+## 2) Import into Insomnia
+
+1. Open **Insomnia**  
+2. Go to **Application Menu → File → Import → From File**  
+3. Select the downloaded `portpulse-insomnia.json`  
+4. Insomnia will create a **Workspace** with folders and requests
+
+---
+
+## 3) Configure environment variables
+
+Create (or edit) the **Base Environment**:
+
+1. In the left top of Insomnia, click the environment dropdown → **Manage Environments**  
+2. In **Base Environment**, add:
+
+```json
+{
+  "base_url": "https://api.useportpulse.com",
+  "api_key": "YOUR_API_KEY"
+}
+```
+
+3. Click **Done** to save.
+
+:::note How it is used
+- Requests in the collection reference **`{{ base_url }}`** in the URL  
+- Auth header uses **`{{ api_key }}`** as a bearer token
+:::
+
+If you need multiple environments, create sub-environments (e.g. **Staging**, **Prod**) and override `base_url` / `api_key`.
+
+---
+
+## 4) Send your first request
+
+1. Pick any request from the collection (e.g. a simple **GET** endpoint)  
+2. Ensure the **Environment** (top-left) is set correctly  
+3. Click **Send**
+
+You should receive a **2xx** response with JSON.  
+If you see `401` or `403`, check the **Authorization** header and your API key permissions.
+
+---
+
+## 5) CSV download &amp; ETag caching (optional)
+
+Some endpoints may support CSV export and conditional requests to save bandwidth.
+
+- See **[CSV &amp; ETag guide](/docs/csv-etag)** for:
+  - Adding `Accept: text/csv`
+  - Using `ETag` / `If-None-Match` to avoid re-downloading unchanged data
+  - Handling `304 Not Modified`
+
+You can add these headers in **Request → Header** within Insomnia and save them as part of the collection.
+
+---
+
+## Troubleshooting
+
+**401 Unauthorized**  
+- Verify `api_key` in the environment  
+- Confirm **Authorization** header is ``Bearer {{ api_key }}``
+
+**403 Forbidden**  
+- Key lacks permission or is restricted (IP/role). Contact your admin.
+
+**404 / Wrong host**  
+- Check `base_url` value (no trailing spaces, correct domain)
+
+**429 Rate limited**  
+- Respect limits, add backoff/retry. See **[Rate Limits](/docs/Guides/rate-limits)**.
+
+**Other errors**  
+- See **[Error handling](/docs/Guides/errors)** for common API error shapes &amp; remediation.
+
+---
+
+## What’s next
+
+- Explore the full **OpenAPI** at **[/openapi](/openapi)**  
+- Prefer **Postman**? Use **[Postman guide](/docs/Guides/postman)**  
+- Authentication details: **[Authentication](/docs/Guides/authentication)**
+
+---

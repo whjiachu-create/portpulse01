@@ -1,0 +1,123 @@
+---
+title: Errors
+description: Unified error model, status codes, and retry guidance for PortPulse API.
+---
+
+PortPulse uses a single **error envelope** across all endpoints.
+
+## Error model
+
+```json
+{
+  "code": "string",            // machine-readable code, e.g. "unauthorized", "rate_limited"
+  "message": "string",         // short human-readable message
+  "request_id": "string",      // x-request-id echoed back for tracing
+  "hint": "string | null"      // optional remediation hint
+}
+---
+title: Errors
+description: Unified error model, status codes, and retry guidance for PortPulse API.
+---
+
+PortPulse uses a single **error envelope** across all endpoints. All error responses are JSON and include a traceable `x-request-id` header.
+
+## Error model
+
+```json
+{
+  "code": "string",           // machine-readable code, e.g. "unauthorized", "rate_limited"
+  "message": "string",        // short human-readable message
+  "request_id": "string",     // value echoed from x-request-id for tracing
+  "hint": "string | null"      // optional remediation hint
+}
+```
+
+**Headers**
+
+- `x-request-id` — Unique id returned on every request (copy this when contacting support).
+- `retry-after` — Present on 429/503 when a safe retry is recommended, value in **seconds**.
+
+## Status codes
+
+| HTTP | `code`                 | When it happens |
+|-----:|------------------------|-----------------|
+| 400  | `bad_request`          | Parameters are missing/invalid, malformed JSON/CSV. |
+| 401  | `unauthorized`         | Missing or invalid `X-API-Key`. |
+| 403  | `forbidden`            | Key is valid but not allowed for the resource (plan/port scope). |
+| 404  | `not_found`            | Resource/route does not exist. |
+| 405  | `method_not_allowed`   | Unsupported HTTP method. |
+| 409  | `conflict`             | State conflict, try again after fixing the conflict. |
+| 412  | `precondition_failed`  | ETag/If-None-Match precondition failed. |
+| 413  | `payload_too_large`    | Request body exceeds limits. |
+| 415  | `unsupported_media_type` | Content-Type is not supported. |
+| 422  | `unprocessable_entity` | Syntactically correct but semantically invalid input. |
+| 429  | `rate_limited`         | Too many requests; respect `retry-after`. |
+| 500  | `internal_error`       | Unexpected server error. |
+| 502  | `bad_gateway`          | Temporary upstream failure. |
+| 503  | `service_unavailable`  | Maintenance or overload; check status page. |
+| 504  | `gateway_timeout`      | Upstream timeout; safe to retry. |
+
+> JSON and CSV endpoints use the same error envelope.
+
+## Example response
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: 15
+X-Request-Id: 01JCYH0H8J2Y8MCK0E8ZQ1V9P6
+
+{
+  "code": "rate_limited",
+  "message": "Too many requests. Please wait before retrying.",
+  "request_id": "01JCYH0H8J2Y8MCK0E8ZQ1V9P6",
+  "hint": "Respect the Retry-After header or reduce concurrency."
+}
+```
+
+## Retry policy
+
+PortPulse endpoints are **idempotent** for `GET/HEAD`.
+
+- Retry **only** when you receive **429/502/503/504**.
+- Use **exponential backoff with jitter** and respect `Retry-After` if present.
+- Do **not** retry 4xx other than 429 — fix the request first.
+
+### Pseudocode
+
+```python
+import time, random
+
+BASE = 0.5   # seconds
+MAX  = 8.0   # seconds
+
+for attempt in range(1, 6):
+    r = get("https://api.useportpulse.com/v1/ports/USLAX/trend", headers={"X-API-Key": KEY})
+
+    if r.status_code < 400:
+        break  # success
+
+    if r.status_code in (429, 502, 503, 504):
+        # server asked us to wait a specific time
+        ra = r.headers.get("retry-after")
+        if ra:
+            time.sleep(float(ra))
+            continue
+        # otherwise exponential backoff with jitter
+        delay = min(MAX, BASE * 2 ** (attempt - 1)) * (0.5 + random.random()/2)
+        time.sleep(delay)
+        continue
+
+    # non-retryable
+    raise Exception(r.json())
+```
+
+## Contact support
+
+If an error persists, email **support@useportpulse.com** with:
+
+1. The **time** of the request and the full URL.
+2. The **`x-request-id`** value returned by the API.
+3. Your **`X-API-Key`** (last 4 chars) and a minimal reproducible snippet.
+
+We respond to Pro/Enterprise incidents per SLA and post updates on the status page.

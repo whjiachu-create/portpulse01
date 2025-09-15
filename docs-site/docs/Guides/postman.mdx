@@ -1,0 +1,114 @@
+---
+id: postman
+title: Postman Collection
+sidebar_label: Postman
+---
+---
+id: postman
+title: Postman Collection
+sidebar_label: Postman
+description: Use the official PortPulse Postman collection and environment to explore the API quickly.
+---
+
+
+
+Meet PortPulse in minutes with our ready‑made Postman assets. This guide walks you through import, setup, and making your first calls—plus tips for CSV downloads and troubleshooting.
+
+:::tip TL;DR
+1) **Download** the collection (and optional environment). 2) **Import** into Postman. 3) **Set** `apiKey` and `baseUrl`. 4) **Send** a request.
+:::
+
+## Downloads
+
+- **Collection**: [portpulse-postman.json](/postman/portpulse-postman.json)
+- **Environment (optional)**: [portpulse.postman_environment.json](/postman/portpulse.postman_environment.json)
+
+> If your security policy blocks downloads, you can still create the environment manually (steps below).
+
+## Prerequisites
+
+- A valid **API key** with access to PortPulse ([how to get one](/docs/Guides/authentication)).
+- Postman app (Desktop recommended).
+- Base URL for the API (default: `https://api.useportpulse.com`).
+
+## Import the Collection
+
+1. Open Postman → **Import**.
+2. Drag & drop or choose the file **`portpulse-postman.json`**.
+3. The collection will appear in the sidebar as **PortPulse API**.
+
+## (Recommended) Import/Create the Environment
+
+### Option A — Import the provided environment
+1. **Import** the file **`portpulse.postman_environment.json`**.
+2. Select the environment and click **Edit** → set your values.
+
+### Option B — Create the environment yourself
+Create a new environment named **PortPulse – Prod** and add these variables:
+
+| Variable | Initial Value | Current Value | Notes |
+| --- | --- | --- | --- |
+| `baseUrl` | `https://api.useportpulse.com` | `https://api.useportpulse.com` | Change to staging if needed. |
+| `apiKey` | `pp_live_…` | `pp_live_…` | Your PortPulse API key. |
+
+Click **Save**, then select the environment from the top‑right environment switcher in Postman.
+
+:::note
+Every request in the collection sends header `X-API-Key: {{apiKey}}` and targets `{{baseUrl}}`. If you rename the variables, update the collection or your environment accordingly.
+:::
+
+## Make Your First Call
+
+Try the **USLAX 30‑day trend** example in the collection, or craft a simple request:
+
+```http
+GET {{baseUrl}}/ports/USLAX/trends?window=30d
+X-API-Key: {{apiKey}}
+```
+
+You should receive a `200 OK` JSON response with the time window and metrics. If not, check **Troubleshooting** below.
+
+## Working with CSV and ETags
+
+Some endpoints can return **CSV**. In Postman:
+
+- Use **Send and Download** to save the file locally.
+- Prefer the `If-None-Match` header with an **ETag** to avoid re‑downloading unchanged data. See: [CSV & ETag](/docs/csv-etag).
+
+## Collection Structure (high‑level)
+
+- **Authentication** – example calls with the `X-API-Key` header.
+- **Ports**
+  - **Trends** – e.g., `/ports/{portCode}/trends?window=30d` (USLAX sample included)
+  - **Snapshots** – e.g., `/ports/{portCode}/snapshot?window=24h`
+- **Utilities** – health/status helpers where available.
+
+Refer to the [OpenAPI Reference](/openapi) and [Endpoints overview](/docs/endpoints) for the full surface.
+
+## Environments & Base URLs
+
+You can duplicate the environment to switch between **Prod** and **Staging**:
+
+- Prod: `https://api.useportpulse.com`
+- Staging (example): `https://staging-api.useportpulse.com`
+
+Update `baseUrl` accordingly and keep the same collection.
+
+## Troubleshooting
+
+- **401 Unauthorized** → Check the `X-API-Key` header uses `{{apiKey}}` and the variable is set. See [Auth](/docs/Guides/authentication) and [Errors](/docs/Guides/errors).
+- **429 Too Many Requests** → You’ve hit a quota or burst limit. See [Rate limits](/docs/Guides/rate-limits) and consider backoff/retry.
+- **4xx/5xx responses** → Compare your request to the [OpenAPI](/openapi). Validate required params and formats, then re‑send.
+- **Empty or unexpected CSV** → Re‑send without `If-None-Match` to bypass cached ETag. See [CSV & ETag](/docs/csv-etag).
+
+## Next steps
+
+- Explore the **Quickstarts** for language examples: [Quickstarts](/docs/Guides/quickstarts)
+- Understand field meanings: [Field Dictionary](/docs/Guides/field-dictionary)
+- Learn data **methodology & definitions**: [Methodology](/docs/Guides/methodology)
+- Track **versioning & deprecations**: [Versioning](/docs/Guides/versioning)
+- Uptime and incidents: [SLA & Status](/docs/Ops/sla-status)
+
+---
+
+**Need help?** Contact your PortPulse representative or reach us via the channel provided in your contract. We’re happy to review your Postman setup.

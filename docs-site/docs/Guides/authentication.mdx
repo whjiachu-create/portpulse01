@@ -1,0 +1,197 @@
+---
+title: Authentication
+description: How to obtain and use your PortPulse API key, environments, headers, rotation, and error handling.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Overview
+
+PortPulse uses simple **API key** authentication over HTTPS.  
+Send your key in the `X-API-Key` header with every request.
+
+- **Key format:** `pp_dev_…` (staging) and `pp_live_…` (production)  
+- **Transport:** HTTPS only, TLS 1.2+  
+- **Header:** `X-API-Key: &lt;your_key&gt;`  
+- **Trace:** Requests echo `x-request-id` for support/triage
+
+:::tip Quickest way to verify your key
+Replace `DEMO_KEY` with your real key and run one of the snippets below.
+:::
+
+<Tabs>
+<TabItem value="curl" label="cURL">
+
+```bash
+curl -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/USLAX/trend?window=7d&format=json"
+```
+</TabItem>
+<TabItem value="python" label="Python">
+
+```python
+import requests
+r = requests.get(
+    "https://api.useportpulse.com/v1/ports/USLAX/trend?window=7d",
+    headers={"X-API-Key": "DEMO_KEY"}
+)
+print(r.status_code, r.headers.get("x-request-id"))
+print(r.json()[:2])
+```
+</TabItem>
+<TabItem value="js" label="JavaScript (fetch)">
+
+```js
+const res = await fetch(
+  "https://api.useportpulse.com/v1/ports/USLAX/trend?window=7d",
+  { headers: { "X-API-Key": "DEMO_KEY" } }
+);
+console.log(res.status, res.headers.get("x-request-id"));
+const data = await res.json();
+```
+</TabItem>
+</Tabs>
+
+---
+
+## Getting an API key
+
+1. **Sign up** on the website and choose a plan (free trial available).  
+2. Copy your key from **Dashboard → API Keys**.  
+3. Keep keys secret; treat them like passwords.
+
+You can create multiple keys per account for isolation (e.g., staging vs production).
+
+---
+
+## Environments
+
+We recommend one key per environment:
+
+| Environment | Key prefix    | Base URL                                 |
+|------------:|---------------|-------------------------------------------|
+| Staging     | `pp_dev_…`    | `https://api.useportpulse.com` (limited data) |
+| Production  | `pp_live_…`   | `https://api.useportpulse.com`            |
+
+> Staging uses the same host but may serve **cached/limited** data. Never ship staging keys to production.
+
+---
+
+## Sending the key
+
+Always include the header:
+
+```http
+X-API-Key: pp_live_xxxxxxxxxxxxxxxxx
+```
+
+Most HTTP clients allow setting default headers:
+
+<Tabs>
+<TabItem value="python-session" label="Python (Session)">
+  
+```python
+import requests
+session = requests.Session()
+session.headers["X-API-Key"] = "pp_live_xxx"
+r = session.get("https://api.useportpulse.com/v1/ports/SGSIN/overview")
+```
+</TabItem>
+<TabItem value="axios" label="Axios">
+
+```js
+import axios from "axios";
+const api = axios.create({
+  baseURL: "https://api.useportpulse.com",
+  headers: { "X-API-Key": "pp_live_xxx" },
+});
+const { data } = await api.get("/v1/ports/SGSIN/overview");
+```
+</TabItem>
+</Tabs>
+
+---
+
+## Rate limits & retries
+
+Each key is subject to rate limits (per minute and burst). See **[Rate limits](./rate-limits)**.  
+Client best practices:
+
+- Implement **exponential backoff** for `429 Too Many Requests`.
+- Respect the `Retry-After` header when present.
+- Avoid tight polling; prefer **ETag/304** for CSV where applicable (see **[CSV & ETag](./csv-etag)**).
+
+---
+
+## Key rotation
+
+- Create a new key in the dashboard.
+- **Deploy** the new key (env vars / secrets).
+- **Verify** traffic with the new key.
+- **Revoke** the old key.
+
+Keep keys in a secret manager (1Password, Doppler, AWS Secrets Manager, etc.). Never commit keys to Git.
+
+---
+
+## Common errors
+
+All errors share a structured body:
+
+```json
+{
+  "code": "unauthorized",
+  "message": "Missing or invalid API key",
+  "request_id": "01JABCDXYZ",
+  "hint": "Send a valid key via 'X-API-Key' header"
+}
+```
+
+Typical cases:
+
+| HTTP | Code           | Why                                                     | Fix |
+|-----:|----------------|----------------------------------------------------------|-----|
+| 401  | `unauthorized` | Missing/invalid key, wrong prefix, or malformed header  | Ensure `X-API-Key` with a valid `pp_dev_…` or `pp_live_…` key |
+| 403  | `forbidden`    | Key valid but lacks access to the resource/plan         | Upgrade plan, adjust entitlements, or use allowed endpoints |
+| 429  | `rate_limited` | Too many requests                                        | Backoff, batching, consider higher tier |
+| 5xx  | `server_error` | Transient platform error                                 | Retry with jitter; contact support if persistent |
+
+See **[Errors](./errors)** for details.
+
+---
+
+## Testing your setup
+
+Quick health check:
+
+```bash
+curl -H "X-API-Key: DEMO_KEY" https://api.useportpulse.com/v1/health
+```
+
+Expect `200 OK` and a small JSON body. For data endpoints, try:
+
+```bash
+curl -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/SGSIN/overview"
+```
+
+---
+
+## Security checklist
+
+- [ ] Store keys in secrets, **not** in code or `.env` committed to Git  
+- [ ] Use per-env keys (staging vs production)  
+- [ ] Rotate keys on personnel/CI changes  
+- [ ] Monitor for unexpected 401/403/429 in logs  
+- [ ] Share `x-request-id` with support when reporting issues
+
+---
+
+## Related
+
+- **[Quickstarts](./quickstarts)**
+- **[Rate limits](./rate-limits)**
+- **[Errors](./errors)**
+- **[Postman](./postman)** · **[Insomnia](./insomnia)**
+- **[Field dictionary](./field-dictionary)**

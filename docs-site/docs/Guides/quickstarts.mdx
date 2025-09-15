@@ -1,0 +1,159 @@
+
+---
+id: quickstarts
+title: Quickstarts
+sidebar_label: Quickstarts
+description: Get started in 5 minutes with cURL, Python, and JavaScript examples using the PortPulse API.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+PortPulse is an **API‑first metrics service** for port congestion, dwell, snapshots, trends, alerts, and HS imports (beta).
+
+This quickstart shows two common reads: a **30‑day trend** and a **current snapshot**. Copy any snippet and replace `DEMO_KEY` with your key.
+
+:::tip Prerequisite
+Get an API key and learn how to pass it in the `X-API-Key` header: see [Authentication](/docs/authentication).
+:::
+
+---
+
+## 1) 30‑day trend (USLAX)
+
+<Tabs>
+<TabItem value="curl" label="cURL" default>
+
+```bash
+curl -sS \
+  -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=json"
+```
+
+</TabItem>
+<TabItem value="python" label="Python">
+
+```python
+import requests
+r = requests.get(
+    "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=json",
+    headers={"X-API-Key": "DEMO_KEY"},
+    timeout=30,
+)
+r.raise_for_status()
+print(r.json()[:3])
+```
+
+</TabItem>
+<TabItem value="js" label="JavaScript">
+
+```js
+const res = await fetch(
+  'https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=json',
+  { headers: { 'X-API-Key': 'DEMO_KEY' } }
+);
+if (!res.ok) throw new Error(await res.text());
+console.log(await res.json());
+```
+
+</TabItem>
+</Tabs>
+
+**CSV instead of JSON** (same data, spreadsheet‑friendly):
+
+```bash
+curl -sS -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d&format=csv" -o uslax_trend.csv
+```
+
+Example JSON (truncated):
+
+```json
+[
+  {"port":"USLAX","date":"2025-08-16","vessel_backlog":27,"avg_dwell_days":4.2},
+  {"port":"USLAX","date":"2025-08-17","vessel_backlog":26,"avg_dwell_days":4.0}
+]
+```
+
+---
+
+## 2) Current snapshot (USLAX)
+
+<Tabs>
+<TabItem value="curl" label="cURL" default>
+
+```bash
+curl -sS \
+  -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/USLAX/snapshot?format=json"
+```
+
+</TabItem>
+<TabItem value="python" label="Python">
+
+```python
+import requests
+r = requests.get(
+    "https://api.useportpulse.com/v1/ports/USLAX/snapshot?format=json",
+    headers={"X-API-Key": "DEMO_KEY"},
+    timeout=30,
+)
+r.raise_for_status()
+print(r.json())
+```
+
+</TabItem>
+<TabItem value="js" label="JavaScript">
+
+```js
+const res = await fetch(
+  'https://api.useportpulse.com/v1/ports/USLAX/snapshot?format=json',
+  { headers: { 'X-API-Key': 'DEMO_KEY' } }
+);
+console.log(await res.json());
+```
+
+</TabItem>
+</Tabs>
+
+CSV variant:
+
+```bash
+curl -sS -H "X-API-Key: DEMO_KEY" \
+  "https://api.useportpulse.com/v1/ports/USLAX/snapshot?format=csv" -o uslax_snapshot.csv
+```
+
+Example JSON (shape may evolve with versions):
+
+```json
+{
+  "port": "USLAX",
+  "generated_at": "2025-09-14T12:00:00Z",
+  "vessel_backlog": 25,
+  "avg_dwell_days": 3.9,
+  "terminals": [
+    {"name": "TRAPAC", "backlog": 7},
+    {"name": "APMT", "backlog": 6}
+  ]
+}
+```
+
+---
+
+## Troubleshooting
+
+- **401 / 403** → Missing or invalid key. Double‑check `X-API-Key` and see [Authentication](/docs/authentication).
+- **429** → Rate limit exceeded. See [Rate limits](/docs/rate-limits) and retry with backoff.
+- **5xx** → Temporary outage. See [SLA & Status](/docs/Ops/sla-status) and retry.
+
+For error payload format and examples, see [Errors](/docs/errors).
+
+---
+
+## Next steps
+
+- Browse the full **OpenAPI**: [/openapi](/openapi)
+- Explore all endpoints: [Endpoints](/docs/endpoints)
+- Field reference for columns: [Field Dictionary](/docs/Guides/field-dictionary)
+- Use a client app: [Postman](/docs/Guides/postman) · [Insomnia](/docs/Guides/insomnia)
+- Versioning & deprecations: [API Versioning](/docs/Guides/versioning)

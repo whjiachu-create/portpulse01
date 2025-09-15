@@ -1,0 +1,21 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2025-09-14T00:00:00.000Z",
+  "resources": [
+    {
+      "_id": "wrk_portpulse",
+      "_type": "workspace",
+      "name": "PortPulse"
+    },
+    {
+      "_id": "req_uslax_trend",
+      "_type": "request",
+      "parentId": "wrk_portpulse",
+      "name": "USLAX trend (30d)",
+      "method": "GET",
+      "url": "https://api.useportpulse.com/v1/ports/USLAX/trend?window=30d",
+      "headers": [{"name": "X-API-Key", "value": "DEMO_KEY"}]
+    }
+  ]
+}
