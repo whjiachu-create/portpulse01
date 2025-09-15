@@ -1,0 +1,14 @@
+name: Docs Headers Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"  # 每30分钟巡检一次（可改）
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run headers check (prod)
+        run: bash scripts/smoke_docs_headers.sh "https://docs.useportpulse.com"
