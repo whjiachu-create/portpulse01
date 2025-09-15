@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>PortPulse API Reference</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>html,body,#redoc{margin:0;height:100%}</style>
+</head>
+<body>
+  <div id="redoc"></div>
+  <!-- 绝对地址 + 版本参数，避免旧缓存 -->
+  <script>
+    window.__SPEC_URL__ = "https://docs.useportpulse.com/openapi.json?v=20250915";
+  </script>
+  <script src="https://cdn.redoc.ly/redoc/v2.5.0/bundles/redoc.standalone.js"></script>
+  <script>
+    Redoc.init(window.__SPEC_URL__, { scrollYOffset: 60 }, document.getElementById('redoc'));
+  </script>
+</body>
+</html>
