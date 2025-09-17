@@ -7,7 +7,7 @@ from hashlib import sha256
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 
-from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query
+from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query, Header
 
 # Auth
 from app.services.dependencies import require_api_key
@@ -197,12 +197,22 @@ def _get_port_service():
 @router.get("/{unlocode}/overview")
 async def get_overview(
     unlocode: str,
-    request: Request,                                  # 非默认参数放前面
-    format: str = Query("csv", pattern="^(json|csv)$"),
+    request: Request,
+    format: Optional[str] = Query(None, pattern="^(json|csv)$"),
+    accept: Optional[str] = Header(None),
 ):
+    """Overview: default JSON; CSV when `format=csv` or `Accept: text/csv`.
+    Keeps strong ETag/304 behavior for CSV.
+    """
     snap = _latest_snapshot_flat(unlocode)
 
-    if format.lower() == "json":
+    # Decide output format: explicit query param > Accept header > default JSON
+    fmt = (format or "").lower()
+    if not fmt:
+        acc = (accept or "").lower()
+        fmt = "csv" if ("text/csv" in acc) else "json"
+
+    if fmt == "json":
         # mirror /snapshot (legacy flat)
         return {k: v for k, v in snap.items() if not k.startswith("_")}
 
@@ -218,7 +228,8 @@ async def get_overview(
 async def head_overview(
     unlocode: str,
     request: Request,
-    format: str = Query("csv", pattern="^(json|csv)$"),
+    format: Optional[str] = Query(None, pattern="^(json|csv)$"),
+    accept: Optional[str] = Header(None),
 ):
     csv_text = _overview_csv_from_snapshot(_latest_snapshot_flat(unlocode))
     headers = _etag_headers(csv_text, "ports:overview:strong-etag")
@@ -234,7 +245,8 @@ async def get_trend(
     window: Optional[int] = Query(None, ge=1, le=30),
     days: Optional[int] = Query(None, ge=1, le=30),
     limit: Optional[int] = Query(None, ge=1, le=1000),
-    format: str = Query("json", pattern="^(json|csv)$"),
+    format: Optional[str] = Query(None, pattern="^(json|csv)$"),
+    accept: Optional[str] = Header(None),
 ):
     # normalize window param (support legacy ?days=)
     w = _coerce_window(window, days)
@@ -249,7 +261,13 @@ async def get_trend(
             # ignore malformed limit and keep full series
             pass
 
-    if format.lower() == "json":
+    # Decide output format: explicit query param > Accept header > default JSON
+    fmt = (format or "").lower()
+    if not fmt:
+        acc = (accept or "").lower()
+        fmt = "csv" if ("text/csv" in acc) else "json"
+
+    if fmt == "json":
         return {"unlocode": unlocode.upper(), "points": points}
 
     csv_text = _trend_csv(points)
@@ -266,7 +284,8 @@ async def head_trend(
     window: Optional[int] = Query(None, ge=1, le=30),
     days: Optional[int] = Query(None, ge=1, le=30),
     limit: Optional[int] = Query(None, ge=1, le=1000),
-    format: str = Query("csv", pattern="^(json|csv)$"),
+    format: Optional[str] = Query(None, pattern="^(json|csv)$"),
+    accept: Optional[str] = Header(None),
 ):
     w = _coerce_window(window, days)
     pts = _select_points(unlocode, w)
