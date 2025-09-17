@@ -72,6 +72,19 @@ def _maybe_304(request: Request, headers: Dict[str, str]) -> Optional[Response]:
         return Response(status_code=304, headers=headers)
     return None
 
+def _coerce_window(window: Optional[int], days: Optional[int]) -> int:
+    """
+    Accept both `window` and legacy `days` as synonyms.
+    Falls back to 7; clamps to [1, 30] to mirror query validators.
+    """
+    w = window if window is not None else (days if days is not None else 7)
+    # clamp
+    if w < 1:
+        w = 1
+    if w > 30:
+        w = 30
+    return w
+
 def _select_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
     """Prefer overrides; fall back to demo; enforce window."""
     ov = load_trend_override(unlocode, window) or {}
@@ -218,10 +231,23 @@ async def head_overview(
 async def get_trend(
     unlocode: str,
     request: Request,
-    window: int = Query(7, ge=1, le=30),
+    window: Optional[int] = Query(None, ge=1, le=30),
+    days: Optional[int] = Query(None, ge=1, le=30),
+    limit: Optional[int] = Query(None, ge=1, le=1000),
     format: str = Query("json", pattern="^(json|csv)$"),
 ):
-    points = _select_points(unlocode, window)
+    # normalize window param (support legacy ?days=)
+    w = _coerce_window(window, days)
+    points = _select_points(unlocode, w)
+    # optional limiting: keep the most recent N points while preserving chronological order
+    if limit is not None:
+        try:
+            n = int(limit)
+            if n >= 0:
+                points = points[-n:] if n > 0 else []
+        except Exception:
+            # ignore malformed limit and keep full series
+            pass
 
     if format.lower() == "json":
         return {"unlocode": unlocode.upper(), "points": points}
@@ -237,10 +263,21 @@ async def get_trend(
 async def head_trend(
     unlocode: str,
     request: Request,
-    window: int = Query(7, ge=1, le=30),
+    window: Optional[int] = Query(None, ge=1, le=30),
+    days: Optional[int] = Query(None, ge=1, le=30),
+    limit: Optional[int] = Query(None, ge=1, le=1000),
     format: str = Query("csv", pattern="^(json|csv)$"),
 ):
-    csv_text = _trend_csv(_select_points(unlocode, window))
+    w = _coerce_window(window, days)
+    pts = _select_points(unlocode, w)
+    if limit is not None:
+        try:
+            n = int(limit)
+            if n >= 0:
+                pts = pts[-n:] if n > 0 else []
+        except Exception:
+            pass
+    csv_text = _trend_csv(pts)
     headers = _etag_headers(csv_text, "ports:trend:strong-etag")
     maybe = _maybe_304(request, headers)
     if maybe:
