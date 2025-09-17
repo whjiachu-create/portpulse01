@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_redoc_html
 
 # ✅ 推荐应用工厂，防止导入顺序问题
 def create_app() -> FastAPI:
@@ -23,3 +25,17 @@ def create_app() -> FastAPI:
     return app
 
 app = create_app()
+
+
+@app.get("/", include_in_schema=False)
+def redoc_root():
+    # Serve human-friendly Redoc at API root to avoid raw JSON "garbled" view
+    return get_redoc_html(
+        openapi_url="/openapi.json",
+        title="PortPulse API — OpenAPI",
+    )
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_spec():
+    # Provide the app's OpenAPI schema at a stable path
+    return JSONResponse(app.openapi())
