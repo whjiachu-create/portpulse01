@@ -3,7 +3,7 @@ import uuid
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 # --- Sentry（可选） ---
@@ -104,6 +104,10 @@ def create_app() -> FastAPI:
     return app
 
 app = create_app()
+# Root route: redirect "/" to health check for a friendly landing
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/v1/health")
 # 全局中间件
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)
