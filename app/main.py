@@ -3,7 +3,7 @@ import uuid
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 # --- Sentry（可选） ---
@@ -105,9 +105,17 @@ def create_app() -> FastAPI:
 
 app = create_app()
 # Root route: redirect "/" to health check for a friendly landing
-@app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse(url="/v1/health")
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <html>
+        <head><title>PortPulse API</title></head>
+        <body>
+            <h1>Welcome to PortPulse API</h1>
+            <p>Visit <a href="https://docs.useportpulse.com">API Documentation</a></p>
+        </body>
+    </html>
+    """
 # 全局中间件
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)
