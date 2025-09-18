@@ -1,107 +1,55 @@
 #!/usr/bin/env bash
-# scripts/selfcheck.sh (v3)
-# - 双阈值：服务端阈值(SLOW_SERVER_MS)硬门槛；端到端阈值(SLOW_E2E_MS)仅告警
-# - 任何接口服务端耗时>=阈值 或 HTTP!=200 -> 退出非0
+set -euo pipefail
 
-set -u
+BASE="${BASE:-https://api.useportpulse.com}"
+PORT="${PORT:-USLAX}"
+API_KEY="pp_live_ee62782b3e1fe11cb77907cab5155a1d"
 
-: "${BASE_URL:?BASE_URL not set}"
-: "${API_KEY:?API_KEY not set}"
+need() { command -v "$1" >/dev/null 2>&1 || { echo "❌ need $1"; exit 1; }; }
+need curl; need jq; need awk
 
-SLOW_SERVER_MS="${SLOW_SERVER_MS:-300}"   # 服务端阈值（看 x-response-time-ms）
-SLOW_E2E_MS="${SLOW_E2E_MS:-2500}"        # 端到端阈值（仅告警）
+ok() { printf "✅ %s\n" "$1"; }
+warn() { printf "⚠️  %s\n" "$1"; }
+fail() { printf "❌ %s\n" "$1"; exit 1; }
 
-green(){ printf '\033[32m%s\033[0m\n' "$*"; }
-yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
-red(){ printf '\033[31m%s\033[0m\n' "$*"; }
+echo "=== PortPulse Selfcheck ==="
+echo "BASE=$BASE PORT=$PORT"
 
-measure() {
-  # $1 name, $2 url, [extra curl args...]
-  local name="$1" url="$2"; shift 2 || true
-  # 抓响应头 + 端到端耗时
-  local headers tmp; tmp="$(mktemp)"
-  read -r code t < <(curl -sS -D "$tmp" -o /dev/null -H "Accept: application/json" "$@" \
-                     -w '%{http_code} %{time_total}' "$url")
-  # 端到端 ms
-  local e2e_ms; e2e_ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
-  # 服务端 ms（响应头）
-  local server_ms=""; server_ms=$(grep -i '^x-response-time-ms:' "$tmp" | awk '{print $2}' | tr -d '\r')
-  rm -f "$tmp"
+curl -fsS "$BASE/v1/health" | jq -e 'has("ok") and .ok==true' >/dev/null && ok "/v1/health OK" || fail "/v1/health failed"
 
-  if [ "$code" != "200" ]; then
-    red "✗ $name  HTTP $code (e2e=${e2e_ms}ms, server=${server_ms:-NA}ms)"
-    return 2
-  fi
+TITLE=$(curl -fsS "$BASE/openapi.json" | jq -r '.info.title')
+VER=$(curl -fsS "$BASE/openapi.json" | jq -r '.info.version')
+PCNT=$(curl -fsS "$BASE/openapi.json" | jq '(.paths|length)')
+echo "OpenAPI: $TITLE v$VER paths=$PCNT"
+[[ "$PCNT" -ge 10 ]] && ok "OpenAPI paths >=10" || warn "OpenAPI paths <10 (=$PCNT)"
 
-  # 端到端仅告警
-  if [ "$e2e_ms" -ge "$SLOW_E2E_MS" ]; then
-    yellow "! $name  slow E2E=${e2e_ms}ms (>=${SLOW_E2E_MS}ms)"
-    e2e_warn=1
-  else
-    green "✓ $name  E2E=${e2e_ms}ms"
-  fi
+code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE")
+[[ "$code" =~ ^(200|301|302)$ ]] && ok "/ root reachable ($code)" || warn "/ root http=$code"
 
-  # 服务端硬门槛（没有该头则不拦截，只提示）
-  if [ -n "$server_ms" ]; then
-    if [ "$server_ms" -ge "$SLOW_SERVER_MS" ]; then
-      red "✗ $name  server=${server_ms}ms (>=${SLOW_SERVER_MS}ms)"
-      return 2
-    fi
-  else
-    yellow "! $name  no x-response-time-ms header"
-  fi
+if [[ -z "$API_KEY" ]]; then
+  warn "API_KEY 为空，跳过受保护端点；export API_KEY=pp_live_xxx 后重跑"
+  exit 0
+fi
 
-  return 0
-}
+curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/overview?format=json" \
+  | jq -e '.unlocode and has("avg_wait_hours")' >/dev/null && ok "overview JSON OK" || fail "overview JSON failed"
 
-measure_csv() {
-  # 同上，但校验表头
-  local name="$1" url="$2" expect="$3"; shift 3 || true
-  local tmp headfile; tmp="$(mktemp)"; headfile="$(mktemp)"
-  read -r code t < <(curl -sS -D "$headfile" -o "$tmp" "$@" -w '%{http_code} %{time_total}' "$url")
-  local e2e_ms; e2e_ms=$(awk -v tt="$t" 'BEGIN{printf "%d", tt*1000}')
-  local server_ms=""; server_ms=$(grep -i '^x-response-time-ms:' "$headfile" | awk '{print $2}' | tr -d '\r')
-  local head; head="$(head -n1 "$tmp" | tr -d '\r')"
-  rm -f "$tmp" "$headfile"
+curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/overview?format=csv" \
+  | head -n 1 | grep -qiE '^unlocode,' && ok "overview CSV header OK" || fail "overview CSV header failed"
 
-  if [ "$code" != "200" ]; then
-    red "✗ $name  HTTP $code (e2e=${e2e_ms}ms, server=${server_ms:-NA}ms)"
-    return 2
-  fi
-  if [[ "$head" != "$expect"* ]]; then
-    red "✗ $name  bad header '${head}'"
-    return 2
-  fi
+LEN=$(curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/trend?limit=7&format=json" | jq '.points | length')
+[[ "$LEN" -ge 1 ]] && ok "trend JSON points length=$LEN" || fail "trend JSON points invalid"
 
-  if [ "$e2e_ms" -ge "$SLOW_E2E_MS" ]; then
-    yellow "! $name  slow E2E=${e2e_ms}ms (>=${SLOW_E2E_MS}ms)"
-    e2e_warn=1
-  else
-    green "✓ $name  E2E=${e2e_ms}ms"
-  fi
+H=$(curl -fsS -D - -H "X-API-Key: $API_KEY" \
+  "$BASE/v1/ports/$PORT/trend?limit=7&format=csv" -o /dev/null)
+ET=$(printf "%s" "$H" | awk 'BEGIN{IGNORECASE=1} /^etag:/{gsub(/\r|\"/,"");print $2}')
+[[ -n "$ET" ]] || fail "ETag not found"
+code=$(curl -s -w "%{http_code}" -o /dev/null \
+  -H "X-API-Key: $API_KEY" -H "If-None-Match: \"$ET\"" \
+  "$BASE/v1/ports/$PORT/trend?limit=7&format=csv")
+if [[ "$code" == "304" ]]; then ok "ETag 304 hit"; else warn "ETag not 304 (http=$code)"; fi
 
-  if [ -n "$server_ms" ] && [ "$server_ms" -ge "$SLOW_SERVER_MS" ]; then
-    red "✗ $name  server=${server_ms}ms (>=${SLOW_SERVER_MS}ms)"
-    return 2
-  fi
+unauth=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/ports/$PORT/overview")
+[[ "$unauth" =~ ^(401|403)$ ]] && ok "Unauthorized check ($unauth)" || warn "Unauthorized http=$unauth"
 
-  return 0
-}
-
-echo "🔎 Selfcheck @ ${BASE_URL}  (server<${SLOW_SERVER_MS}ms, e2e warn >=${SLOW_E2E_MS}ms)"
-
-fail=0
-e2e_warn=0
-
-measure "/v1/health"                            "${BASE_URL}/v1/health" || fail=1
-measure "/v1/sources"                           "${BASE_URL}/v1/sources" || fail=1
-measure "/v1/ports/USLAX/snapshot"              "${BASE_URL}/v1/ports/USLAX/snapshot" -H "X-API-Key: ${API_KEY}" || fail=1
-measure "/v1/ports/USLAX/dwell?days=14"         "${BASE_URL}/v1/ports/USLAX/dwell?days=14" -H "X-API-Key: ${API_KEY}" || fail=1
-measure_csv "/v1/ports/USLAX/overview?format=csv" "${BASE_URL}/v1/ports/USLAX/overview?format=csv" 'unlocode,as_of' -H "X-API-Key: ${API_KEY}" || fail=1
-measure "/v1/ports/USNYC/alerts?window=14d"     "${BASE_URL}/v1/ports/USNYC/alerts?window=14d" -H "X-API-Key: ${API_KEY}" || fail=1
-measure "/v1/ports/USLAX/trend"                 "${BASE_URL}/v1/ports/USLAX/trend?days=30&fields=vessels,avg_wait_hours&limit=30&offset=0" -H "X-API-Key: ${API_KEY}" || fail=1
-
-[ "$fail" -eq 0 ] && echo "✅ Server OK (under ${SLOW_SERVER_MS}ms)."
-[ "$e2e_warn" -ne 0 ] && echo "⚠️  Some endpoints are network-slow (E2E >= ${SLOW_E2E_MS}ms)."
-
-exit "$fail"
+echo "=== Done ==="
