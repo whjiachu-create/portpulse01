@@ -5,16 +5,17 @@ from http import HTTPStatus
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # --- Sentry（可选） ---
-try:
-    import sentry_sdk
-    from sentry_sdk.integrations.fastapi import FastApiIntegration
-    SENTRY_DSN = os.getenv("SENTRY_DSN")
-    if SENTRY_DSN:
-        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05, integrations=[FastApiIntegration()])
-except Exception:
-    pass
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastAPIIntegration
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05, integrations=[FastAPIIntegration()])
+    except ImportError:
+        pass  # Sentry SDK 未安装时容错
 
 # --- Middlewares & OpenAPI 安全声明 ---
 from app.middlewares.rate_limit import RateLimitMiddleware
@@ -25,6 +26,19 @@ try:
 except Exception:
     RequestIdMiddleware = None  # 容错
 
+# 本地轻量兜底：确保所有响应都带 x-request-id（不依赖外部文件）
+class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        rid = request.headers.get("x-request-id") or str(uuid.uuid4())
+        # 透传到 request.state，便于下游使用
+        try:
+            request.state.request_id = rid
+        except Exception:
+            pass
+        response = await call_next(request)
+        response.headers["x-request-id"] = rid
+        return response
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="PortPulse API",
@@ -34,9 +48,11 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
 
-    # 可选的 Request-ID 中间件
+    # 统一 Request-ID：优先用外部中间件；否则使用本地兜底
     if RequestIdMiddleware:
         app.add_middleware(RequestIdMiddleware)
+    else:
+        app.add_middleware(_LocalRequestIdMiddleware)
 
     # 路由（确保在 create_app 内 include，才能进 OpenAPI）
     from app.routers import meta, hs, alerts, ports  # noqa
@@ -105,17 +121,9 @@ def create_app() -> FastAPI:
 
 app = create_app()
 # Root route: redirect "/" to health check for a friendly landing
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
-    return """
-    <html>
-        <head><title>PortPulse API</title></head>
-        <body>
-            <h1>Welcome to PortPulse API</h1>
-            <p>Visit <a href="https://docs.useportpulse.com">API Documentation</a></p>
-        </body>
-    </html>
-    """
+    return RedirectResponse(url="/v1/health", status_code=307)
 # 全局中间件
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)

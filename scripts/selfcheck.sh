@@ -24,7 +24,7 @@ echo "OpenAPI: $TITLE v$VER paths=$PCNT"
 [[ "$PCNT" -ge 10 ]] && ok "OpenAPI paths >=10" || warn "OpenAPI paths <10 (=$PCNT)"
 
 code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE")
-[[ "$code" =~ ^(200|301|302)$ ]] && ok "/ root reachable ($code)" || warn "/ root http=$code"
+[[ "$code" =~ ^(200|301|302|307|308)$ ]] && ok "/ root reachable ($code)" || warn "/ root http=$code"
 
 if [[ -z "$API_KEY" ]]; then
   warn "API_KEY 为空，跳过受保护端点；export API_KEY=pp_live_xxx 后重跑"
@@ -48,6 +48,16 @@ code=$(curl -s -w "%{http_code}" -o /dev/null \
   -H "X-API-Key: $API_KEY" -H "If-None-Match: \"$ET\"" \
   "$BASE/v1/ports/$PORT/trend?limit=7&format=csv")
 if [[ "$code" == "304" ]]; then ok "ETag 304 hit"; else warn "ETag not 304 (http=$code)"; fi
+
+# ETag strong-equality hit-rate (10 samples)
+HITS=0; TOTAL=10
+for i in $(seq 1 $TOTAL); do
+  rc=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "X-API-Key: $API_KEY" -H "If-None-Match: \"$ET\"" \
+    "$BASE/v1/ports/$PORT/trend?limit=7&format=csv")
+  [[ "$rc" == "304" ]] && HITS=$((HITS+1))
+done
+echo "ETag 304 hit-rate: $HITS/$TOTAL"
 
 unauth=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/ports/$PORT/overview")
 [[ "$unauth" =~ ^(401|403)$ ]] && ok "Unauthorized check ($unauth)" || warn "Unauthorized http=$unauth"
