@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE="${BASE:-https://api.useportpulse.com}"
 PORT="${PORT:-USLAX}"
-API_KEY="pp_live_ee62782b3e1fe11cb77907cab5155a1d"
+API_KEY="${API_KEY:-}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "❌ need $1"; exit 1; }; }
 need curl; need jq; need awk
