@@ -1,8 +1,75 @@
+import os
+import uuid
+from typing import Optional, Set
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from fastapi.responses import JSONResponse
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
-    """非侵入式：只把 X-API-Key 暴露到 request.state.api_key，不做拦截。"""
+    """
+    兼容两种头：
+      - X-API-Key: <key>
+      - Authorization: Bearer <key>
+    约定：
+      - 演示 key（NEXT_PUBLIC_DEMO_API_KEY，默认 dev_demo_123）仅放行 GET
+      - 正式 key（ADMIN_API_KEY 或 API_KEYS 里逗号分隔）放行所有
+      - /, /v1/health, /openapi.json, /docs, /redoc, /robots.txt 始终放行
+    同时把解析到的 key 放到 request.state.api_key
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.demo_key: Optional[str] = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123")
+        admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
+        keys_env = os.getenv("API_KEYS", "")
+        keys: Set[str] = set(k.strip() for k in keys_env.split(",") if k.strip())
+        if admin_key:
+            keys.add(admin_key)
+        self.valid_keys: Set[str] = keys
+
+        # 永远放行的路径
+        self.public_paths = {
+            "/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"
+        }
+
+    def _get_key(self, request: Request) -> Optional[str]:
+        key = request.headers.get("x-api-key")
+        if not key:
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                key = auth[7:].strip()
+        return key or None
+
     async def dispatch(self, request: Request, call_next):
-        request.state.api_key = request.headers.get("x-api-key")
-        return await call_next(request)
+        key = self._get_key(request)
+        # 对下游兼容：把 key 放到 request.state
+        try:
+            request.state.api_key = key
+        except Exception:
+            pass
+
+        # 公开资源 + 预检
+        if request.method.upper() == "OPTIONS" or request.url.path in self.public_paths:
+            return await call_next(request)
+
+        # 演示 key：仅 GET 允许
+        if key and self.demo_key and key == self.demo_key and request.method.upper() == "GET":
+            return await call_next(request)
+
+        # 正式 key：在白名单中即可放行
+        if key and key in self.valid_keys:
+            return await call_next(request)
+
+        # 统一 401 错误体
+        rid = request.headers.get("x-request-id") or str(uuid.uuid4())
+        return JSONResponse(
+            status_code=401,
+            headers={"x-request-id": rid},
+            content={
+                "code": "http_401",
+                "message": "API key missing/invalid",
+                "request_id": rid,
+                "hint": "Use header 'x-api-key: <key>' or 'Authorization: Bearer <key>' (demo: dev_demo_123, prod: pp_admin_*/pp_live_*)",
+            },
+        )

@@ -19,7 +19,12 @@ if SENTRY_DSN:
 
 # --- Middlewares & OpenAPI 安全声明 ---
 from app.middlewares.rate_limit import RateLimitMiddleware
-from app.middlewares.api_key import ApiKeyMiddleware
+# 保持对你现有 ApiKeyMiddleware 的优先使用；如导入失败再用本地兜底
+try:
+    from app.middlewares.api_key import ApiKeyMiddleware as _ExternalApiKeyMw
+except Exception:
+    _ExternalApiKeyMw = None
+
 from app.openapi_extra import add_api_key_security
 try:
     from app.middlewares.request_id import RequestIdMiddleware
@@ -30,7 +35,6 @@ except Exception:
 class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
-        # 透传到 request.state，便于下游使用
         try:
             request.state.request_id = rid
         except Exception:
@@ -39,6 +43,69 @@ class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
         response.headers["x-request-id"] = rid
         return response
 
+# <<< 本地轻量兜底：API Key 校验（外部不可用时启用）
+class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, valid_keys: set[str], demo_key: str | None):
+        super().__init__(app)
+        self.valid = set(k for k in (valid_keys or set()) if k)
+        self.demo = demo_key
+
+    async def dispatch(self, request: Request, call_next):
+        # 取 key：支持 x-api-key 或 Authorization: Bearer
+        key = request.headers.get("x-api-key")
+        if not key:
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                key = auth[7:].strip()
+
+        # 放行无需鉴权的基础路由
+        if request.url.path in ("/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"):
+            return await call_next(request)
+
+        # 允许 demo key 访问 GET（演示用）
+        if key and self.demo and key == self.demo and request.method.upper() == "GET":
+            return await call_next(request)
+
+        # 正式 key
+        if key and key in self.valid:
+            return await call_next(request)
+
+        # 统一 401 错误体
+        rid = request.headers.get("x-request-id") or str(uuid.uuid4())
+        return JSONResponse(
+            status_code=401,
+            headers={"x-request-id": rid},
+            content={
+                "code": "http_401",
+                "message": "API key missing/invalid",
+                "request_id": rid,
+                "hint": "Provide API key via header: 'x-api-key: <key>' or 'Authorization: Bearer <key>'",
+            },
+        )
+# >>>
+
+
+def _collect_keys() -> tuple[set[str], str | None]:
+    """
+    统一收集密钥：
+    - NEXT_PUBLIC_DEMO_API_KEY（默认 dev_demo_123）
+    - ADMIN_API_KEY（单个）
+    - API_KEYS（逗号分隔）
+    同时把关键变量写回环境，便于外部中间件读取。
+    """
+    demo_key = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123")  # <<< 默认演示 key
+    admin_key = os.getenv("ADMIN_API_KEY", "").strip()
+    api_keys_env = os.getenv("API_KEYS", "")
+    keys = set(k.strip() for k in api_keys_env.split(",") if k.strip())
+    if admin_key:
+        keys.add(admin_key)
+
+    # 写回环境，确保外部中间件可读取同一份配置
+    os.environ["NEXT_PUBLIC_DEMO_API_KEY"] = demo_key
+    os.environ["API_KEYS"] = ",".join(sorted(keys))
+    return keys, demo_key
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="PortPulse API",
@@ -46,6 +113,12 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        description=(
+            "Authentication:\n"
+            "  - Demo: set header `x-api-key: dev_demo_123`\n"
+            "  - Production: set header `x-api-key: <pp_admin_xxx>` or "
+            "`Authorization: Bearer <pp_admin_xxx>`\n"
+        ),
     )
 
     # 统一 Request-ID：优先用外部中间件；否则使用本地兜底
@@ -53,6 +126,26 @@ def create_app() -> FastAPI:
         app.add_middleware(RequestIdMiddleware)
     else:
         app.add_middleware(_LocalRequestIdMiddleware)
+
+    # --- 统一挂载 API Key 中间件 ---
+    valid_keys, demo_key = _collect_keys()
+
+    if _ExternalApiKeyMw is not None:
+        # 外部中间件（推荐）：若其支持关键字参数则传入；若不支持也能靠环境变量工作
+        try:
+            app.add_middleware(
+                _ExternalApiKeyMw,
+                header_names=["x-api-key", "authorization"],  # 允许两种传法
+                token_prefixes=["Bearer "],                    # Authorization: Bearer
+                demo_key=demo_key,
+                valid_keys=valid_keys,
+            )
+        except TypeError:
+            # 外部中间件不接受这些参数时，退化为仅靠环境变量
+            app.add_middleware(_ExternalApiKeyMw)
+    else:
+        # 没有外部实现，用本地兜底
+        app.add_middleware(_LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key)
 
     # 路由（确保在 create_app 内 include，才能进 OpenAPI）
     from app.routers import meta, hs, alerts, ports  # noqa
@@ -117,15 +210,19 @@ def create_app() -> FastAPI:
             },
         )
 
+    # OpenAPI 安全声明（你已有的工具函数）
+    add_api_key_security(app)
+
     return app
 
 app = create_app()
+
 # Root route: redirect "/" to health check for a friendly landing
 @app.get("/")
 async def root():
     return RedirectResponse(url="/v1/health", status_code=307)
+
 # 全局中间件
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)
-app.add_middleware(ApiKeyMiddleware)     # 例：读取 API_KEYS/NEXT_PUBLIC_DEMO_API_KEY
-add_api_key_security(app)
+# ApiKey 中间件已在 create_app 内处理（避免重复添加）
