@@ -33,6 +33,35 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ------------------------------------------------------------------------------
 
+def _parse_window_tolerant(window, days):
+    """
+    Accept int or str with suffix 'd' (e.g. '14d').
+    Fallback to legacy `days`. Clamp to [1,30].
+    """
+    def _coerce_one(v):
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return v
+        try:
+            s = str(v).strip().lower()
+            if s.endswith('d'):
+                s = s[:-1]
+            return int(s)
+        except Exception:
+            return None
+    w = _coerce_one(window)
+    if w is None:
+            w = _coerce_one(days)
+    if w is None:
+            w = 7
+    if w < 1:
+            w = 1
+    if w > 30:
+            w = 30
+    return w
+
+
 def _demo_trend_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
     """Deterministic demo when DB/override is absent. ETag-stable."""
     today = datetime.utcnow().date()
@@ -249,7 +278,7 @@ async def get_trend(
     accept: Optional[str] = Header(None),
 ):
     # normalize window param (support legacy ?days=)
-    w = _coerce_window(window, days)
+    w = _parse_window_tolerant(window, days)
     points = _select_points(unlocode, w)
     # optional limiting: keep the most recent N points while preserving chronological order
     if limit is not None:
@@ -287,7 +316,7 @@ async def head_trend(
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
-    w = _coerce_window(window, days)
+    w = _parse_window_tolerant(window, days)
     pts = _select_points(unlocode, w)
     if limit is not None:
         try:
