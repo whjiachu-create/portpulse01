@@ -88,3 +88,14 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 "hint": "Use header 'x-api-key: <key>' or 'Authorization: Bearer <key>' (demo: dev_demo_123, prod: pp_admin_*/pp_live_*)",
             },
         )
+# --- compat: accept `header_names` kwarg and map to first element ---
+try:
+    _orig_init = ApiKeyMiddleware.__init__
+    def _compat_init(self, app, *args, header_name="X-API-Key", **kwargs):
+        names = kwargs.pop("header_names", None)
+        if names and isinstance(names, (list, tuple)) and len(names) > 0:
+            header_name = names[0]
+        return _orig_init(self, app, header_name=header_name, *args, **kwargs)
+    ApiKeyMiddleware.__init__ = _compat_init  # monkey patch
+except Exception:
+    pass
