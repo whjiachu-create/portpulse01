@@ -18,7 +18,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     同时把解析到的 key 放到 request.state.api_key
     """
 
-    def __init__(self, app):
+    def __init__(self, app, header_name="x-api-key", **kwargs):
         super().__init__(app)
         self.demo_key: Optional[str] = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123")
         admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
@@ -28,18 +28,33 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             keys.add(admin_key)
         self.valid_keys: Set[str] = keys
 
+        # 兼容 header_names
+        header_names = kwargs.pop("header_names", None)
+        if header_names:
+            self._header_names = [h.lower() for h in header_names]
+            self._header_name = self._header_names[0]
+        else:
+            self._header_name = header_name
+            self._header_names = [header_name.lower()]
+
         # 永远放行的路径
         self.public_paths = {
             "/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"
         }
 
     def _get_key(self, request: Request) -> Optional[str]:
-        key = request.headers.get("x-api-key")
-        if not key:
-            auth = request.headers.get("authorization", "")
+        # 支持多个 header 名
+        hdrs = dict((k.decode().lower(), v.decode()) for k, v in request.scope.get("headers", []))
+        api_key = None
+        for hn in self._header_names:
+            if hn in hdrs:
+                api_key = hdrs[hn]
+                break
+        if not api_key:
+            auth = hdrs.get("authorization", "")
             if auth.lower().startswith("bearer "):
-                key = auth[7:].strip()
-        return key or None
+                api_key = auth[7:].strip()
+        return api_key or None
 
     async def dispatch(self, request: Request, call_next):
         key = self._get_key(request)
