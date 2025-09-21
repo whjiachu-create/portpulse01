@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+KEY="${KEY:-pp_dev_123456}"
 KEY="${KEY:-dev_key_123}"
 set -euo pipefail
 KEY="${KEY:-dev_key_123}"
@@ -6,7 +7,9 @@ if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get insta
 
 BASE="${BASE:-http://127.0.0.1:8080}"
 UNLOCODE="${UNLOCODE:-USLAX}"
-API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"
+CURL_AUTH=(-H "X-API-Key: '${KEY}'" -H "Authorization: Bearer '${KEY}'")
+API_HEADER="X-API-Key: ${KEY}"
+export PP_DEMO_KEY="" PP_VALID_KEYS="" PORTPULSE_DEMO_KEY="" PORTPULSE_API_KEYS=""
 export PP_DEMO_KEY="$KEY" PP_VALID_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY"
 
 log() { printf "\n== %s ==\n" "$*"; }
@@ -52,15 +55,15 @@ main() {
   if has_path "/v1/ports/{unlocode}/overview"; then
     log "overview csv（强 ETag + 304 + HEAD）"
     CSV="$BASE/v1/ports/$UNLOCODE/overview?format=csv"
-    H1="$(curl -sSI -H "$API_HEADER" "$CSV")"
+    H1="$(curl -sSI "${CURL_AUTH[@]}" "$CSV")"
     echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^(HTTP|etag:|cache-control:|vary:|x-csv-source:)/{gsub(/\r/,"");print}'
     ETAG="$(echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^etag:/{gsub(/\r/,"");print $2}')"
     [ -n "$ETAG" ] || { echo "Missing ETag"; echo "$H1" | sed -n "1,60p"; exit 1; }
     case "$ETAG" in W/*) echo "Weak ETag ($ETAG)"; exit 1 ;; esac
-    require_status 304 "$CSV" -H "$API_HEADER" -H "If-None-Match: $ETAG"
+    require_status 304 "$CSV" "${CURL_AUTH[@]}" -H "If-None-Match: $ETAG"
     STRONG="${ETAG#W/}"
-    require_status 304 "$CSV" -H "$API_HEADER" -H "If-None-Match: W/$STRONG"
-    H2="$(curl -sSI -H "$API_HEADER" "$CSV")"
+    require_status 304 "$CSV" "${CURL_AUTH[@]}" -H "If-None-Match: W/$STRONG"
+    H2="$(curl -sSI "${CURL_AUTH[@]}" "$CSV")"
     echo "$H2" | sed -n '1,10p'
     echo "$H2" | awk 'BEGIN{IGNORECASE=1}/^HTTP/{print $0; exit}' | grep -q "200" || { echo "HEAD not 200"; exit 1; }
     require_header_contains "$H2" "etag" '"'
