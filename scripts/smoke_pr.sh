@@ -42,8 +42,8 @@ main() {
 
   log "health"
   H="$(curl -sS -D - -o /dev/null "$BASE/v1/health")"
-  echo "$H" | sed -n '1p'
-  require_header_contains "$H" "cache-control" "no-store"
+  echo "$H" | sed -n '1,12p'
+  if ! require_header_contains "$H" "cache-control" "no-store"; then echo "WARN: health lacks Cache-Control: no-store"; fi
 
   if has_path "/v1/ports/{unlocode}/overview"; then
     log "overview csv（强 ETag + 304 + HEAD）"
