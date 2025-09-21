@@ -25,6 +25,7 @@ jobs:
         sudo apt-get update -y && sudo apt-get install -y jq
       - name: Run PR smoke
         env:
+            KEY: "DEMO_KEY"
           BASE: "http://127.0.0.1:8080"
           UNLOCODE: "USLAX"
           API_HEADER: "X-API-Key: dev_key_123"
