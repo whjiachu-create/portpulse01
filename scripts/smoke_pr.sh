@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
+KEY="${KEY:-DEMO_KEY}"
 set -euo pipefail
 KEY="${KEY:-pp_dev_123456}"
 if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq; fi
 
 BASE="${BASE:-http://127.0.0.1:8080}"
 UNLOCODE="${UNLOCODE:-USLAX}"
-API_HEADER="${API_HEADER:-X-API-Key: ${KEY:-pp_dev_123456}}"
+API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"
 export PP_DEMO_KEY="$KEY" PP_VALID_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY"
 
 log() { printf "\n== %s ==\n" "$*"; }
 
+export PP_DEMO_KEY="${KEY}" PP_VALID_KEYS="${KEY}" PORTPULSE_DEMO_KEY="${KEY}" PORTPULSE_API_KEYS="${KEY}"
 start_server() {
   python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 > uvicorn.log 2>&1 &
   PID=$!
