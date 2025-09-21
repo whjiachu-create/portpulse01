@@ -4,6 +4,11 @@ KEY="${KEY:-${PP_DEMO_KEY:-}}"
 API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"
 shopt -s expand_aliases
 alias curl="curl -H \"$API_HEADER\""
+KEY="${KEY:-${PP_DEMO_KEY:-}}"
+[ -n "$KEY" ] || { echo "ERR: KEY is empty (set KEY or PP_DEMO_KEY)"; exit 1; }
+API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"
+shopt -s expand_aliases
+alias curl="curl -H \"$API_HEADER\""
 KEY="${KEY:-pp_dev_123456}"
 KEY="${KEY:-dev_key_123}"
 set -euo pipefail
