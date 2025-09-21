@@ -8,7 +8,10 @@ if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get insta
 BASE="${BASE:-http://127.0.0.1:8080}"
 UNLOCODE="${UNLOCODE:-USLAX}"
 CURL_AUTH=(-H "X-API-Key: '${KEY}'" -H "Authorization: Bearer '${KEY}'")
-API_HEADER="X-API-Key: ${KEY}"
+KEY="${KEY:-${PP_SMOKE_KEY:-dev_demo_123}}"
+API_H1="X-API-Key: ${KEY}"
+API_H2="Authorization: Bearer ${KEY}"
+export PP_VALID_KEYS="$KEY" PP_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY"
 export PP_DEMO_KEY="" PP_VALID_KEYS="" PORTPULSE_DEMO_KEY="" PORTPULSE_API_KEYS=""
 export PP_DEMO_KEY="$KEY" PP_VALID_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY"
 
