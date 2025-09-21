@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq; fi
 
 BASE="${BASE:-http://127.0.0.1:8080}"
 UNLOCODE="${UNLOCODE:-USLAX}"
