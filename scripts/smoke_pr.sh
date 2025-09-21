@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+KEY="${KEY:-pp_dev_123456}"
 if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq; fi
 
 BASE="${BASE:-http://127.0.0.1:8080}"
 UNLOCODE="${UNLOCODE:-USLAX}"
-API_HEADER="${API_HEADER:-X-API-Key: dev_key_123}"
+API_HEADER="${API_HEADER:-X-API-Key: ${KEY:-pp_dev_123456}}"
+export PP_DEMO_KEY="$KEY" PP_VALID_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY"
 
 log() { printf "\n== %s ==\n" "$*"; }
 
