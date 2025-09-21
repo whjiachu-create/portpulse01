@@ -51,7 +51,7 @@ main() {
     H1="$(curl -sSI -H "$API_HEADER" "$CSV")"
     echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^(HTTP|etag:|cache-control:|vary:|x-csv-source:)/{gsub(/\r/,"");print}'
     ETAG="$(echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^etag:/{gsub(/\r/,"");print $2}')"
-    [ -n "$ETAG" ] || { echo "Missing ETag"; exit 1; }
+    [ -n "$ETAG" ] || { echo "Missing ETag"; echo "$H1" | sed -n "1,60p"; exit 1; }
     case "$ETAG" in W/*) echo "Weak ETag ($ETAG)"; exit 1 ;; esac
     require_status 304 "$CSV" -H "$API_HEADER" -H "If-None-Match: $ETAG"
     STRONG="${ETAG#W/}"
