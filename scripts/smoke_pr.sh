@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-KEY="${KEY:-DEMO_KEY}"
+KEY="${KEY:-dev_key_123}"
 set -euo pipefail
-KEY="${KEY:-pp_dev_123456}"
+KEY="${KEY:-dev_key_123}"
 if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq; fi
 
 BASE="${BASE:-http://127.0.0.1:8080}"
