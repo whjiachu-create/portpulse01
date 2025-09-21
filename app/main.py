@@ -135,7 +135,7 @@ def create_app() -> FastAPI:
         try:
             app.add_middleware(
                 _ExternalApiKeyMw,
-                header_name="X-API-Key", "authorization"],  # 允许两种传法
+                header_name="X-API-Key",  # 允许两种传法
                 token_prefixes=["Bearer "],                    # Authorization: Bearer
                 demo_key=demo_key,
                 valid_keys=valid_keys,
