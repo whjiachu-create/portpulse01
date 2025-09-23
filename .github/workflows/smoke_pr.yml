@@ -1,4 +1,4 @@
-name: PR Smoke (online)
+name: PR Smoke (local uvicorn)
 
 on:
   pull_request:
@@ -8,13 +8,21 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
+    env:
+      # 自检使用的本地地址
+      BASE: "http://127.0.0.1:8080"
+      # 让受保护端点在 CI 可读：用 demo key（只放行 GET）
+      NEXT_PUBLIC_DEMO_API_KEY: "dev_demo_123"
+      # 中间件白名单（你本地已验证 prefix 模式）
+      PP_AUTH_MODE: "prefix"
+      PP_ACCEPT_PREFIXES: "pp_live_,pp_admin_,pp_dev_"
+      # 让 demo key 也能通过（脚本会优先使用 X-API-Key）
+      API_KEYS: "dev_demo_123"
+      UNLOCODE: "USLAX"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -25,17 +33,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install jq
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y jq
+        run: sudo apt-get update -y && sudo apt-get install -y jq
 
       - name: Run PR smoke
-        env:
-          # 线上 API；如需测本地自行覆盖 BASE
-          BASE: "https://api.useportpulse.com"
-          UNLOCODE: "USLAX"
-          # 任选其一：PORTPULSE_API_KEY / PP_DEMO_KEY / KEY
-          PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
-          # PP_DEMO_KEY: ${{ secrets.PP_DEMO_KEY }}   # <- 有需要可解注
-          # KEY: ${{ secrets.PORTPULSE_API_KEY }}     # <- 也可直接用 KEY
+        shell: bash
         run: bash scripts/smoke_pr.sh

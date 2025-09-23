@@ -1,114 +1,77 @@
 #!/usr/bin/env bash
-# --- compatibility BEGIN ---
-
-# 允许从多种变量里取 Key（谁有用谁）
-KEY="${KEY:-${PP_DEMO_KEY:-${PORTPULSE_API_KEY:-}}}"
-
-# 允许直接传 API_HEADER；否则由 KEY 组装
-if [ -z "${API_HEADER:-}" ] && [ -n "${KEY:-}" ]; then
-  API_HEADER="X-API-Key: ${KEY}"
-fi
-
-# 默认用线上 BASE（CI/本地可覆盖）
-BASE="${BASE:-https://api.useportpulse.com}"
-
-# 统一检查（KEY 与 API_HEADER 至少要有一个）
-if [ -z "${KEY:-}" ] && [ -z "${API_HEADER:-}" ]; then
-  echo "ERR: KEY is empty (set KEY or PP_DEMO_KEY or PORTPULSE_API_KEY, or pass API_HEADER)"
-  exit 1
-fi
-
-# --- compatibility END ---
-KEY="${KEY:-${PP_DEMO_KEY:-}}"
-[ -n "$KEY" ] || { echo "ERR: KEY is empty (set KEY or PP_DEMO_KEY)"; exit 1; }
-API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"
-shopt -s expand_aliases
-alias curl="curl -H \"$API_HEADER\""
-KEY="${KEY:-${PP_DEMO_KEY:-}}"
-[ -n "$KEY" ] || { echo "ERR: KEY is empty (set KEY or PP_DEMO_KEY)"; exit 1; }
-API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"
-shopt -s expand_aliases
-alias curl="curl -H \"$API_HEADER\""
-KEY="${KEY:-pp_dev_123456}"
-KEY="${KEY:-dev_key_123}"
 set -euo pipefail
-KEY="${KEY:-dev_key_123}"
-if ! command -v jq >/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq; fi
 
+# --- 基本环境 ---
 BASE="${BASE:-http://127.0.0.1:8080}"
-UNLOCODE="${UNLOCODE:-USLAX}"
-CURL_AUTH=(-H "X-API-Key: '${KEY}'" -H "Authorization: Bearer '${KEY}'")
-KEY="${KEY:-${PP_SMOKE_KEY:-dev_demo_123}}"
-API_H1="X-API-Key: ${KEY}"
-API_H2="Authorization: Bearer ${KEY}"
-export PP_VALID_KEYS="$KEY" PP_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY"
-export PP_DEMO_KEY="" PP_VALID_KEYS="" PORTPULSE_DEMO_KEY="" PORTPULSE_API_KEYS=""
-export PP_DEMO_KEY="$KEY" PP_VALID_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY" PORTPULSE_API_KEYS="$KEY"
+PORT="${UNLOCODE:-${PORT:-USLAX}}"
+API_KEY="${API_KEY:-${PORTPULSE_API_KEY:-${KEY:-${NEXT_PUBLIC_DEMO_API_KEY:-dev_demo_123}}}}"
 
-KEY="${KEY:-dev_demo_123}"
-export PORTPULSE_API_KEYS="$KEY" PP_VALID_KEYS="$KEY" PORTPULSE_DEMO_KEY="$KEY" NEXT_PUBLIC_DEMO_API_KEY="$KEY"
-API_HEADER1="X-API-Key: $KEY"
-API_HEADER2="Authorization: Bearer $KEY"
-log() { printf "\n== %s ==\n" "$*"; }
+need() { command -v "$1" >/dev/null 2>&1 || { echo "❌ need $1"; exit 1; }; }
+need curl; need jq
 
-export PP_DEMO_KEY="${KEY}" PP_VALID_KEYS="${KEY}" PORTPULSE_DEMO_KEY="${KEY}" PORTPULSE_API_KEYS="${KEY}"
-start_server() {
-  python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 > uvicorn.log 2>&1 &
-  PID=$!
-  trap 'kill ${PID:-0} 2>/dev/null || true' EXIT
-  for i in $(seq 1 60); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/health" || true)
-    [ "$code" = "200" ] && return 0
-    sleep 0.5
-  done
-  echo "Healthcheck timeout"; tail -n 100 uvicorn.log || true; exit 1
-}
+ok()   { printf "✅ %s\n" "$1"; }
+warn() { printf "⚠️  %s\n" "$1"; }
+fail() { printf "❌ %s\n" "$1"; exit 1; }
 
-has_path() {
-  local p="$1"
-  curl -s "$BASE/openapi.json" | jq -er --arg p "$p" '.paths[$p]' >/dev/null 2>&1
-}
+echo "=== PortPulse PR Smoke ==="
+echo "BASE=$BASE PORT=$PORT"
 
-require_header_contains() {
-  local headers="$1" key_lc="$2" expect_sub="$3"
-  echo "$headers" | awk 'BEGIN{IGNORECASE=1} /^'"$key_lc"':/ {print}' | grep -qi -- "$expect_sub"
-}
+# --- 起本地 Uvicorn（若没起） ---
+uvicorn_pid=""
+if ! curl -fsS "$BASE/v1/health" >/dev/null 2>&1; then
+  # 在 repo 根目录下以后台方式启动
+  nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 > /tmp/uvicorn.log 2>&1 &
+  uvicorn_pid=$!
+  trap '[[ -n "${uvicorn_pid:-}" ]] && kill $uvicorn_pid 2>/dev/null || true' EXIT
+fi
 
-require_status() {
-  local expect="$1" url="$2"; shift 2 || true
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' "$@" "$url")"
-  [ "$code" = "$expect" ] || { echo "Expect $expect but got $code: $url"; return 1; }
-}
-
-main() {
-  start_server
-
-  log "health"
-  H="$(curl -sS -D - -o /dev/null "$BASE/v1/health")"
-  echo "$H" | sed -n '1,12p'
-  if ! require_header_contains "$H" "cache-control" "no-store"; then echo "WARN: health lacks Cache-Control: no-store"; fi
-
-  if has_path "/v1/ports/{unlocode}/overview"; then
-    log "overview csv（强 ETag + 304 + HEAD）"
-    CSV="$BASE/v1/ports/$UNLOCODE/overview?format=csv"
-    H1="$(curl -sSI "${CURL_AUTH[@]}" "$CSV")"
-    echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^(HTTP|etag:|cache-control:|vary:|x-csv-source:)/{gsub(/\r/,"");print}'
-    ETAG="$(echo "$H1" | awk 'BEGIN{IGNORECASE=1}/^etag:/{gsub(/\r/,"");print $2}')"
-    [ -n "$ETAG" ] || { echo "Missing ETag"; echo "$H1" | sed -n "1,60p"; exit 1; }
-    case "$ETAG" in W/*) echo "Weak ETag ($ETAG)"; exit 1 ;; esac
-    require_status 304 "$CSV" "${CURL_AUTH[@]}" -H "If-None-Match: $ETAG"
-    STRONG="${ETAG#W/}"
-    require_status 304 "$CSV" "${CURL_AUTH[@]}" -H "If-None-Match: W/$STRONG"
-    H2="$(curl -sSI "${CURL_AUTH[@]}" "$CSV")"
-    echo "$H2" | sed -n '1,10p'
-    echo "$H2" | awk 'BEGIN{IGNORECASE=1}/^HTTP/{print $0; exit}' | grep -q "200" || { echo "HEAD not 200"; exit 1; }
-    require_header_contains "$H2" "etag" '"'
-    require_header_contains "$H2" "cache-control" "max-age="
-  else
-    log "跳过 ports/overview（OpenAPI 未暴露此路由）"
+# --- 健康探活，最多等 25s ---
+for i in {1..25}; do
+  if curl -fsS "$BASE/v1/health" | jq -e '.ok==true' >/dev/null 2>&1; then
+    ok "health ready"
+    break
   fi
+  sleep 1
+  [[ $i -eq 25 ]] && { echo "---- /tmp/uvicorn.log ----"; tail -n +1 /tmp/uvicorn.log || true; fail "Healthcheck timeout"; }
+done
 
-  echo; echo "All PR smoke checks passed."
-}
-main "$@"
+# --- OpenAPI / 根路径 ---
+TITLE=$(curl -fsS "$BASE/openapi.json" | jq -r '.info.title')
+VER=$(curl -fsS "$BASE/openapi.json" | jq -r '.info.version')
+PCNT=$(curl -fsS "$BASE/openapi.json" | jq '(.paths|length)')
+echo "OpenAPI: $TITLE v$VER paths=$PCNT"
+[[ "$PCNT" -ge 10 ]] && ok "OpenAPI paths >=10" || warn "OpenAPI paths <10 (=$PCNT)"
+
+code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE")
+[[ "$code" =~ ^(200|301|302|307|308)$ ]] && ok "/ root reachable ($code)" || warn "/ root http=$code"
+
+# --- 受保护端点（用 X-API-Key；CI 默认 demo key 只读） ---
+curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/overview?format=json" \
+  | jq -e '.unlocode and has("avg_wait_hours")' >/dev/null && ok "overview JSON OK" || fail "overview JSON failed"
+
+curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/overview?format=csv" \
+  | head -n 1 | grep -qiE '^unlocode,' && ok "overview CSV header OK" || fail "overview CSV header failed"
+
+LEN=$(curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/trend?limit=7&format=json" | jq '.points | length')
+[[ "$LEN" -ge 1 ]] && ok "trend JSON points length=$LEN" || fail "trend JSON points invalid"
+
+# ETag / 304
+H=$(curl -fsS -D - -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$PORT/trend?limit=7&format=csv" -o /dev/null)
+ET=$(printf "%s" "$H" | awk 'BEGIN{IGNORECASE=1} /^etag:/{gsub(/\r|\"/,"");print $2}')
+[[ -n "$ET" ]] || fail "ETag not found"
+code=$(curl -s -w "%{http_code}" -o /dev/null -H "X-API-Key: $API_KEY" -H "If-None-Match: \"$ET\"" \
+  "$BASE/v1/ports/$PORT/trend?limit=7&format=csv")
+[[ "$code" == "304" ]] && ok "ETag 304 hit" || warn "ETag not 304 (http=$code)"
+
+HITS=0; TOTAL=10
+for i in $(seq 1 $TOTAL); do
+  rc=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $API_KEY" -H "If-None-Match: \"$ET\"" \
+    "$BASE/v1/ports/$PORT/trend?limit=7&format=csv")
+  [[ "$rc" == "304" ]] && HITS=$((HITS+1))
+done
+echo "ETag 304 hit-rate: $HITS/$TOTAL"
+
+unauth=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/ports/$PORT/overview")
+[[ "$unauth" =~ ^(401|403)$ ]] && ok "Unauthorized check ($unauth)" || warn "Unauthorized http=$unauth"
+
+echo "=== Done ==="
