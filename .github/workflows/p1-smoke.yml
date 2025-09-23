@@ -1,0 +1,140 @@
+name: P1 Smoke
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: */30
+@db.
+CNAME
+PUBLIC_BETA.md
+Procfile
+USLAX_overview.csv
+Users
+accept_20250923T013504Z
+app
+apply_portpulse_patch.sh
+backups
+data
+db
+docs
+docs-site
+etl
+eval "$(ssh-agent -s)"
+eval "$(ssh-agent -s)".pub
+examples
+headers.txt
+hs_940360_cn_us.csv
+ingesters
+jobs
+lax.csv
+lax_overview.csv
+logs
+main.py
+migrations
+models_config.json
+patch.diff
+ping_db.py
+ports_p1.yaml
+requirements.txt
+runtime.txt
+scripts
+selfcheck.out
+tests
+@db.
+CNAME
+PUBLIC_BETA.md
+Procfile
+USLAX_overview.csv
+Users
+accept_20250923T013504Z
+app
+apply_portpulse_patch.sh
+backups
+data
+db
+docs
+docs-site
+etl
+eval "$(ssh-agent -s)"
+eval "$(ssh-agent -s)".pub
+examples
+headers.txt
+hs_940360_cn_us.csv
+ingesters
+jobs
+lax.csv
+lax_overview.csv
+logs
+main.py
+migrations
+models_config.json
+patch.diff
+ping_db.py
+ports_p1.yaml
+requirements.txt
+runtime.txt
+scripts
+selfcheck.out
+tests
+@db.
+CNAME
+PUBLIC_BETA.md
+Procfile
+USLAX_overview.csv
+Users
+accept_20250923T013504Z
+app
+apply_portpulse_patch.sh
+backups
+data
+db
+docs
+docs-site
+etl
+eval "$(ssh-agent -s)"
+eval "$(ssh-agent -s)".pub
+examples
+headers.txt
+hs_940360_cn_us.csv
+ingesters
+jobs
+lax.csv
+lax_overview.csv
+logs
+main.py
+migrations
+models_config.json
+patch.diff
+ping_db.py
+ports_p1.yaml
+requirements.txt
+runtime.txt
+scripts
+selfcheck.out
+tests
+*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p1-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq curl
+
+      - name: Run smoke
+        env:
+          BASE: https://api.useportpulse.com
+          KEY: dev_demo_123
+        run: bash scripts/p1_smoke.sh http://127.0.0.1:8080 

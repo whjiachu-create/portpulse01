@@ -1,7 +1,8 @@
+# app/middlewares/api_key.py
+
 import os
 import uuid
-from typing import Optional, Set
-
+from typing import Optional, Set, Iterable
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from fastapi.responses import JSONResponse
@@ -18,8 +19,15 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     同时把解析到的 key 放到 request.state.api_key
     """
 
-    def __init__(self, app):
+    def __init__(
+        self,
+        app,
+        header_name: str = "x-api-key",
+        **kwargs   # ← 关键：吞掉未知 kwargs（比如老代码传的 header_names）
+    ):
         super().__init__(app)
+
+        # env
         self.demo_key: Optional[str] = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123")
         admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
         keys_env = os.getenv("API_KEYS", "")
@@ -28,40 +36,46 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             keys.add(admin_key)
         self.valid_keys: Set[str] = keys
 
-        # 永远放行的路径
-        self.public_paths = {
-            "/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"
-        }
+        # 兼容 header_names（老代码可能还会传）
+        header_names = kwargs.get("header_names")
+        if header_names:
+            names = list(header_names)
+        else:
+            names = [header_name]
+        self._header_names = [h.lower() for h in names]
+
+        # 永远放行
+        self.public_paths = {"/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"}
 
     def _get_key(self, request: Request) -> Optional[str]:
-        key = request.headers.get("x-api-key")
-        if not key:
-            auth = request.headers.get("authorization", "")
+        hdrs = dict((k.decode().lower(), v.decode()) for k, v in request.scope.get("headers", []))
+        api_key = None
+        for hn in self._header_names:
+            if hn in hdrs:
+                api_key = hdrs[hn]
+                break
+        if not api_key:
+            auth = hdrs.get("authorization", "")
             if auth.lower().startswith("bearer "):
-                key = auth[7:].strip()
-        return key or None
+                api_key = auth[7:].strip()
+        return api_key or None
 
     async def dispatch(self, request: Request, call_next):
         key = self._get_key(request)
-        # 对下游兼容：把 key 放到 request.state
         try:
             request.state.api_key = key
         except Exception:
             pass
 
-        # 公开资源 + 预检
         if request.method.upper() == "OPTIONS" or request.url.path in self.public_paths:
             return await call_next(request)
 
-        # 演示 key：仅 GET 允许
         if key and self.demo_key and key == self.demo_key and request.method.upper() == "GET":
             return await call_next(request)
 
-        # 正式 key：在白名单中即可放行
         if key and key in self.valid_keys:
             return await call_next(request)
 
-        # 统一 401 错误体
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
         return JSONResponse(
             status_code=401,

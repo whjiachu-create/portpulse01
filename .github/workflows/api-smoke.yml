@@ -1,0 +1,29 @@
+name: API Smoke (online)
+
+on:
+  push:
+    branches: [ main ]   # 只在 main 触发
+  workflow_dispatch: {}  # 需要时手动点跑
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      BASE: https://api.useportpulse.com
+      KEY: dev_demo_123
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+      - name: Wait for deploy (health)
+        run: |
+          set -euo pipefail
+          for i in {1..30}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/health")
+            if [[ "$code" == "200" ]]; then echo "health OK"; exit 0; fi
+            echo "health=$code, retry $i"; sleep 2
+          done
+          echo "Healthcheck timeout"; exit 1
+      - name: P1 smoke
+        run: bash scripts/p1_smoke.sh "$BASE" "$KEY"

@@ -2,27 +2,46 @@ name: PR Smoke (local uvicorn)
 
 on:
   pull_request:
-  workflow_dispatch:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # 自检使用的本地地址
+      BASE: "http://127.0.0.1:8080"
+      # 让受保护端点在 CI 可读：用 demo key（只放行 GET）
+      NEXT_PUBLIC_DEMO_API_KEY: "dev_demo_123"
+      # 中间件白名单（prefix 模式）
+      PP_AUTH_MODE: "prefix"
+      PP_ACCEPT_PREFIXES: "pp_live_,pp_admin_,pp_dev_"
+      # 让 demo key 也能通过（脚本会优先使用 X-API-Key）
+      API_KEYS: "dev_demo_123"
+      UNLOCODE: "USLAX"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get update -y
+          sudo apt-get install -y jq curl
+
       - name: Run PR smoke
-        env:
-          BASE: "http://127.0.0.1:8080"
-          UNLOCODE: "USLAX"
-          API_HEADER: "X-API-Key: dev_key_123"
+        shell: bash
         run: bash scripts/smoke_pr.sh
