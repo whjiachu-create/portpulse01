@@ -1,18 +1,31 @@
 name: P1 Smoke
+
 on:
   push:
   workflow_dispatch:
-  schedule: [{cron: "*/30 * * * *"}]
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p1-smoke
+  cancel-in-progress: true
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y jq curl
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq curl
+
       - name: Run smoke
         env:
           BASE: https://api.useportpulse.com
           KEY: dev_demo_123
-        run: |
-          bash scripts/p1_smoke.sh "$BASE" "$KEY"
+        run: bash scripts/p1_smoke.sh "$BASE" "$KEY"

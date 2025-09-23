@@ -1,8 +1,10 @@
+from __future__ import annotations
 import os
 import uuid
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request, HTTPException
+from typing import Optional, Set
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -23,13 +25,13 @@ from app.middlewares.rate_limit import RateLimitMiddleware
 try:
     from app.middlewares.api_key import ApiKeyMiddleware as _ExternalApiKeyMw
 except Exception:
-    _ExternalApiKeyMw = None
+    _ExternalApiKeyMw =Optional[str]
 
 from app.openapi_extra import add_api_key_security
 try:
     from app.middlewares.request_id import RequestIdMiddleware
 except Exception:
-    RequestIdMiddleware = None  # 容错
+    RequestIdMiddleware =Optional[str]  # 容错
 
 # 本地轻量兜底：确保所有响应都带 x-request-id（不依赖外部文件）
 class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
@@ -45,7 +47,7 @@ class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
 
 # <<< 本地轻量兜底：API Key 校验（外部不可用时启用）
 class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, valid_keys: set[str], demo_key: str | None):
+    def __init__(self, app, valid_keys: Set[str], demo_key: Optional[str]|Optional[str]):
         super().__init__(app)
         self.valid = set(k for k in (valid_keys or set()) if k)
         self.demo = demo_key
@@ -85,7 +87,7 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
 # >>>
 
 
-def _collect_keys() -> tuple[set[str], str | None]:
+def _collect_keys() -> tuple[Set[str], Optional[str]|Optional[str]]:
     """
     统一收集密钥：
     - NEXT_PUBLIC_DEMO_API_KEY（默认 dev_demo_123）
@@ -130,12 +132,12 @@ def create_app() -> FastAPI:
     # --- 统一挂载 API Key 中间件 ---
     valid_keys, demo_key = _collect_keys()
 
-    if _ExternalApiKeyMw is not None:
+    if _ExternalApiKeyMw is not Optional[str]:
         # 外部中间件（推荐）：若其支持关键字参数则传入；若不支持也能靠环境变量工作
         try:
             app.add_middleware(
                 _ExternalApiKeyMw,
-                header_name="X-API-Key", "authorization"],  # 允许两种传法
+                header_name="X-API-Key",  # 允许两种传法
                 token_prefixes=["Bearer "],                    # Authorization: Bearer
                 demo_key=demo_key,
                 valid_keys=valid_keys,
@@ -192,7 +194,7 @@ def create_app() -> FastAPI:
                 "code": f"http_{exc.status_code}",
                 "message": exc.detail or HTTPStatus(exc.status_code).phrase,
                 "request_id": rid,
-                "hint": None,
+                "hint":Optional[str],
             },
         )
 
@@ -206,7 +208,7 @@ def create_app() -> FastAPI:
                 "code": "http_500",
                 "message": "Internal Server Error",
                 "request_id": rid,
-                "hint": None,
+                "hint":Optional[str],
             },
         )
 
