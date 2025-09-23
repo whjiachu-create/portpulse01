@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-# Starlette 基类（FastAPI 依赖 Starlette，跟随安装）
+# Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # --- Sentry（可选） ---
@@ -40,8 +40,7 @@ except Exception:
 
 from app.middlewares.rate_limit import RateLimitMiddleware
 from app.openapi_extra import add_api_key_security
-from app.routers import health  # health route
-
+from app.routers import health  # 健康路由
 
 # ---------- 本地兜底中间件 ----------
 class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
@@ -55,6 +54,17 @@ class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
         response.headers["x-request-id"] = rid
         return response
 
+# ---- Health 硬旁路（最先注册）：任何情况下 /v1/health 必须 200 ----
+class _HealthBypassMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/v1/health":
+            from datetime import datetime, timezone
+            return JSONResponse(
+                status_code=200,
+                content={"ok": True, "ts": datetime.now(timezone.utc).isoformat()},
+                headers={"x-request-id": request.headers.get("x-request-id", str(uuid.uuid4()))},
+            )
+        return await call_next(request)
 
 class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, valid_keys: Set[str], demo_key: Optional[str]):
@@ -79,7 +89,6 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
         return key
 
     async def dispatch(self, request: Request, call_next):
-        # 放行基础路由
         if request.url.path in self._public_paths:
             return await call_next(request)
 
@@ -105,7 +114,6 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
             },
         )
 
-
 # ---------- Key 收集 ----------
 def _collect_keys() -> tuple[Set[str], Optional[str]]:
     demo_key = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123").strip()
@@ -120,7 +128,6 @@ def _collect_keys() -> tuple[Set[str], Optional[str]]:
     os.environ["API_KEYS"] = ",".join(sorted(keys))
 
     return keys, demo_key
-
 
 # ---------- 应用工厂 ----------
 def create_app() -> FastAPI:
@@ -137,7 +144,7 @@ def create_app() -> FastAPI:
         ),
     )
 
-    # 1) 最先注册“健康旁路”
+    # 1) 最先注册“健康旁路”，保证 /v1/health 永不 500
     app.add_middleware(_HealthBypassMiddleware)
 
     # Request-ID
@@ -148,7 +155,7 @@ def create_app() -> FastAPI:
 
     valid_keys, demo_key = _collect_keys()
 
-    # ApiKey：外部实现不传参数（避免版本不兼容）；否则本地兜底
+    # ApiKey：外部实现不传参数；否则本地兜底
     if ExternalApiKeyMw:
         try:
             app.add_middleware(ExternalApiKeyMw)
@@ -228,27 +235,12 @@ def create_app() -> FastAPI:
     add_api_key_security(app)
     return app
 
-
 app = create_app()
-
 
 @app.get("/")
 async def root():
-    # 友好跳转
     return RedirectResponse(url="/v1/health", status_code=307)
-
 
 # 全局限流（可通过环境变量关闭）
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)
-# ---- Health 硬旁路（最先注册）：任何情况下 /v1/health 必须 200 ----
-class _HealthBypassMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/v1/health":
-            from datetime import datetime, timezone
-            return JSONResponse(
-                status_code=200,
-                content={"ok": True, "ts": datetime.now(timezone.utc).isoformat()},
-                headers={"x-request-id": request.headers.get("x-request-id", str(uuid.uuid4()))},
-            )
-        return await call_next(request)
