@@ -1,4 +1,3 @@
-# app/main.py
 from __future__ import annotations
 
 import os
@@ -9,8 +8,6 @@ from typing import Optional, Set
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-
-# Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # --- Sentry（可选） ---
@@ -19,13 +16,9 @@ if SENTRY_DSN:
     try:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi import FastAPIIntegration
-        sentry_sdk.init(
-            dsn=SENTRY_DSN,
-            traces_sample_rate=0.05,
-            integrations=[FastAPIIntegration()],
-        )
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05, integrations=[FastAPIIntegration()])
     except Exception:
-        pass  # 容错
+        pass
 
 # --- 外部中间件（有则用，无则 None） ---
 try:
@@ -40,7 +33,6 @@ except Exception:
 
 from app.middlewares.rate_limit import RateLimitMiddleware
 from app.openapi_extra import add_api_key_security
-from app.routers import health  # 健康路由
 
 # ---------- 本地兜底中间件 ----------
 class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
@@ -54,31 +46,12 @@ class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
         response.headers["x-request-id"] = rid
         return response
 
-# ---- Health 硬旁路（最先注册）：任何情况下 /v1/health 必须 200 ----
-class _HealthBypassMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/v1/health":
-            from datetime import datetime, timezone
-            return JSONResponse(
-                status_code=200,
-                content={"ok": True, "ts": datetime.now(timezone.utc).isoformat()},
-                headers={"x-request-id": request.headers.get("x-request-id", str(uuid.uuid4()))},
-            )
-        return await call_next(request)
-
 class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, valid_keys: Set[str], demo_key: Optional[str]):
         super().__init__(app)
         self.valid = set(k for k in (valid_keys or set()) if k)
         self.demo = demo_key
-        self._public_paths = {
-            "/",
-            "/v1/health",
-            "/openapi.json",
-            "/docs",
-            "/redoc",
-            "/robots.txt",
-        }
+        self._public_paths = {"/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"}
 
     def _extract_key(self, request: Request) -> Optional[str]:
         key = request.headers.get("x-api-key")
@@ -91,17 +64,11 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path in self._public_paths:
             return await call_next(request)
-
         key = self._extract_key(request)
-
-        # 允许 demo key 访问 GET
         if key and self.demo and key == self.demo and request.method.upper() == "GET":
             return await call_next(request)
-
-        # 正式 key
         if key and key in self.valid:
             return await call_next(request)
-
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
         return JSONResponse(
             status_code=401,
@@ -110,9 +77,22 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
                 "code": "http_401",
                 "message": "API key missing/invalid",
                 "request_id": rid,
-                "hint": "Provide API key via 'X-API-Key: <key>' or 'Authorization: Bearer <key>'",
+                "hint": "Provide API key via 'X-API-Key' or 'Authorization: Bearer <key>'",
             },
         )
+
+# ---------- Health 硬旁路（应放在“最外层”，因此最后 add_middleware） ----------
+class _HealthBypassMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/v1/health":
+            from datetime import datetime, timezone
+            rid = request.headers.get("x-request-id") or str(uuid.uuid4())
+            return JSONResponse(
+                status_code=200,
+                headers={"x-request-id": rid},
+                content={"ok": True, "ts": datetime.now(timezone.utc).isoformat()},
+            )
+        return await call_next(request)
 
 # ---------- Key 收集 ----------
 def _collect_keys() -> tuple[Set[str], Optional[str]]:
@@ -122,11 +102,8 @@ def _collect_keys() -> tuple[Set[str], Optional[str]]:
     keys = set(k.strip() for k in api_keys_env.split(",") if k.strip())
     if admin_key:
         keys.add(admin_key)
-
-    # 写回环境，供外部中间件读取
     os.environ["NEXT_PUBLIC_DEMO_API_KEY"] = demo_key
     os.environ["API_KEYS"] = ",".join(sorted(keys))
-
     return keys, demo_key
 
 # ---------- 应用工厂 ----------
@@ -140,22 +117,17 @@ def create_app() -> FastAPI:
         description=(
             "Authentication:\n"
             "  - Demo: header `X-API-Key: dev_demo_123`\n"
-            "  - Production: `X-API-Key: <pp_admin_xxx>` or `Authorization: Bearer <pp_admin_xxx>`\n"
+            "  - Production: `X-API-Key: <pp_xxx>` or `Authorization: Bearer <key>`\n"
         ),
     )
 
-    # 1) 最先注册“健康旁路”，保证 /v1/health 永不 500
-    app.add_middleware(_HealthBypassMiddleware)
-
-    # Request-ID
+    # 先注册常规中间件（这些可能失败）
     if ExternalRequestIdMw:
         app.add_middleware(ExternalRequestIdMw)
     else:
         app.add_middleware(_LocalRequestIdMiddleware)
 
     valid_keys, demo_key = _collect_keys()
-
-    # ApiKey：外部实现不传参数；否则本地兜底
     if ExternalApiKeyMw:
         try:
             app.add_middleware(ExternalApiKeyMw)
@@ -164,8 +136,12 @@ def create_app() -> FastAPI:
     else:
         app.add_middleware(_LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key)
 
+    # 可选限流（注意：后面我们还会把健康旁路加到“最外层”）
+    if not os.getenv("DISABLE_RATELIMIT"):
+        app.add_middleware(RateLimitMiddleware)
+
     # 路由
-    from app.routers import meta, hs, alerts, ports  # noqa: E402
+    from app.routers import meta, hs, alerts, ports, health  # noqa: E402
     app.include_router(meta.router)
     app.include_router(hs.router, prefix="/v1/hs", tags=["hs"])
     app.include_router(alerts.router, prefix="/v1", tags=["alerts"])
@@ -183,13 +159,6 @@ def create_app() -> FastAPI:
     try:
         from app.routers import admin_backfill  # noqa: E402
         app.include_router(admin_backfill.router, prefix="/v1/admin", tags=["admin"])
-    except Exception:
-        pass
-
-    # 内部补采（可选）
-    try:
-        from app.routers import internal_backfill  # noqa: E402
-        app.include_router(internal_backfill.router, tags=["internal"])
     except Exception:
         pass
 
@@ -224,15 +193,14 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=500,
             headers={"x-request-id": rid},
-            content={
-                "code": "http_500",
-                "message": "Internal Server Error",
-                "request_id": rid,
-                "hint": None,
-            },
+            content={"code": "http_500", "message": "Internal Server Error", "request_id": rid, "hint": None},
         )
 
     add_api_key_security(app)
+
+    # **最后** 把健康旁路放到“最外层”，确保无条件 200
+    app.add_middleware(_HealthBypassMiddleware)
+
     return app
 
 app = create_app()
@@ -240,7 +208,3 @@ app = create_app()
 @app.get("/")
 async def root():
     return RedirectResponse(url="/v1/health", status_code=307)
-
-# 全局限流（可通过环境变量关闭）
-if not os.getenv("DISABLE_RATELIMIT"):
-    app.add_middleware(RateLimitMiddleware)
