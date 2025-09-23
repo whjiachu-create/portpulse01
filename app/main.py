@@ -1,21 +1,50 @@
-# --- safe imports / sentry 同前，保持不变 ---
+# app/main.py
+from __future__ import annotations
 
+import os
+import uuid
+from http import HTTPStatus
 from typing import Optional, Set
 
-# ✅ 正确的导入兜底：用 None，而不是 Optional[str] 这种 typing 对象
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+# Starlette 基类（FastAPI 依赖 Starlette，跟随安装）
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# --- Sentry（可选） ---
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastAPIIntegration
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            traces_sample_rate=0.05,
+            integrations=[FastAPIIntegration()],
+        )
+    except Exception:
+        pass  # 容错
+
+# --- 外部中间件（有则用，无则 None） ---
+try:
+    from app.middlewares.request_id import RequestIdMiddleware as ExternalRequestIdMw
+except Exception:
+    ExternalRequestIdMw = None
+
 try:
     from app.middlewares.api_key import ApiKeyMiddleware as ExternalApiKeyMw
 except Exception:
-    ExternalApiKeyMw = None  # type: ignore
+    ExternalApiKeyMw = None
 
-try:
-    from app.middlewares.request_id import RequestIdMiddleware
-except Exception:
-    RequestIdMiddleware = None  # type: ignore
+from app.middlewares.rate_limit import RateLimitMiddleware
+from app.openapi_extra import add_api_key_security
 
-# ✅ 本地 request-id 兜底
+
+# ---------- 本地兜底中间件 ----------
 class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
+    async def dispatch(self, request: Request, call_next):
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
         try:
             request.state.request_id = rid
@@ -25,26 +54,41 @@ class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
         response.headers["x-request-id"] = rid
         return response
 
-# ✅ 本地 API Key 兜底（签名简化，移除奇怪的联合类型写法）
+
 class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, valid_keys: Set[str], demo_key: Optional[str]):
         super().__init__(app)
         self.valid = set(k for k in (valid_keys or set()) if k)
         self.demo = demo_key
+        self._public_paths = {
+            "/",
+            "/v1/health",
+            "/openapi.json",
+            "/docs",
+            "/redoc",
+            "/robots.txt",
+        }
 
-    async def dispatch(self, request: Request, call_next):
+    def _extract_key(self, request: Request) -> Optional[str]:
         key = request.headers.get("x-api-key")
         if not key:
             auth = request.headers.get("authorization", "")
             if auth.lower().startswith("bearer "):
                 key = auth[7:].strip()
+        return key
 
-        if request.url.path in ("/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt"):
+    async def dispatch(self, request: Request, call_next):
+        # 放行基础路由
+        if request.url.path in self._public_paths:
             return await call_next(request)
 
+        key = self._extract_key(request)
+
+        # 允许 demo key 访问 GET
         if key and self.demo and key == self.demo and request.method.upper() == "GET":
             return await call_next(request)
 
+        # 正式 key
         if key and key in self.valid:
             return await call_next(request)
 
@@ -56,20 +100,28 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
                 "code": "http_401",
                 "message": "API key missing/invalid",
                 "request_id": rid,
-                "hint": "Provide API key via header 'X-API-Key' or 'Authorization: Bearer <key>'",
+                "hint": "Provide API key via 'X-API-Key: <key>' or 'Authorization: Bearer <key>'",
             },
         )
 
+
+# ---------- Key 收集 ----------
 def _collect_keys() -> tuple[Set[str], Optional[str]]:
     demo_key = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123").strip()
     admin_key = os.getenv("ADMIN_API_KEY", "").strip()
-    keys = set(k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip())
+    api_keys_env = os.getenv("API_KEYS", "")
+    keys = set(k.strip() for k in api_keys_env.split(",") if k.strip())
     if admin_key:
         keys.add(admin_key)
+
+    # 写回环境，供外部中间件读取
     os.environ["NEXT_PUBLIC_DEMO_API_KEY"] = demo_key
     os.environ["API_KEYS"] = ",".join(sorted(keys))
+
     return keys, demo_key
 
+
+# ---------- 应用工厂 ----------
 def create_app() -> FastAPI:
     app = FastAPI(
         title="PortPulse API",
@@ -84,60 +136,65 @@ def create_app() -> FastAPI:
         ),
     )
 
-    # request-id
-    if RequestIdMiddleware:
-        app.add_middleware(RequestIdMiddleware)
+    # Request-ID
+    if ExternalRequestIdMw:
+        app.add_middleware(ExternalRequestIdMw)
     else:
         app.add_middleware(_LocalRequestIdMiddleware)
 
-    # api-key
     valid_keys, demo_key = _collect_keys()
+
+    # ApiKey：外部实现不传参数（避免版本不兼容）；否则本地兜底
     if ExternalApiKeyMw:
         try:
-            app.add_middleware(
-                ExternalApiKeyMw,
-                # 有的版本不接受这些 kw；失败则下方退化
-                header_name="X-API-Key",
-                token_prefixes=["Bearer "],
-                demo_key=demo_key,
-                valid_keys=valid_keys,
-            )
-        except TypeError:
             app.add_middleware(ExternalApiKeyMw)
+        except Exception:
+            app.add_middleware(_LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key)
     else:
         app.add_middleware(_LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key)
 
-    # routers（与你现有保持一致）
-    from app.routers import meta, hs, alerts, ports
+    # 路由
+    from app.routers import meta, hs, alerts, ports  # noqa: E402
     app.include_router(meta.router)
-    app.include_router(hs.router,     prefix="/v1/hs",    tags=["hs"])
-    app.include_router(alerts.router, prefix="/v1",       tags=["alerts"])
-    app.include_router(ports.router,  prefix="/v1/ports", tags=["ports"])
+    app.include_router(hs.router, prefix="/v1/hs", tags=["hs"])
+    app.include_router(alerts.router, prefix="/v1", tags=["alerts"])
+    app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+
+    # 可选 trio
     try:
-        from app.routers import ports_trio
+        from app.routers import ports_trio  # noqa: E402
         app.include_router(ports_trio.router, prefix="/v1/ports", tags=["ports"])
     except Exception:
         pass
-    from app.routers import admin_backfill
-    app.include_router(admin_backfill.router, prefix="/v1/admin", tags=["admin"])
+
+    # Admin backfill（内部）
     try:
-        from app.routers import internal_backfill
+        from app.routers import admin_backfill  # noqa: E402
+        app.include_router(admin_backfill.router, prefix="/v1/admin", tags=["admin"])
+    except Exception:
+        pass
+
+    # 内部补采（可选）
+    try:
+        from app.routers import internal_backfill  # noqa: E402
         app.include_router(internal_backfill.router, tags=["internal"])
     except Exception:
         pass
+
+    # /devportal 静态站（存在时挂载）
     try:
         if os.path.isdir("docs/devportal"):
             app.mount("/devportal", StaticFiles(directory="docs/devportal", html=True), name="devportal")
     except Exception:
         pass
 
-    # 统一错误体（⚠️ hint 一律用 None，别再放 typing 对象）
-    def _rid(req: Request) -> str:
+    # 统一错误体
+    def _request_id(req: Request) -> str:
         return req.headers.get("x-request-id") or str(uuid.uuid4())
 
     @app.exception_handler(HTTPException)
     async def _http_exc(request: Request, exc: HTTPException):
-        rid = _rid(request)
+        rid = _request_id(request)
         return JSONResponse(
             status_code=exc.status_code,
             headers={"x-request-id": rid},
@@ -151,7 +208,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _any_exc(request: Request, exc: Exception):
-        rid = _rid(request)
+        rid = _request_id(request)
         return JSONResponse(
             status_code=500,
             headers={"x-request-id": rid},
@@ -166,11 +223,16 @@ def create_app() -> FastAPI:
     add_api_key_security(app)
     return app
 
+
 app = create_app()
+
 
 @app.get("/")
 async def root():
+    # 友好跳转
     return RedirectResponse(url="/v1/health", status_code=307)
 
+
+# 全局限流（可通过环境变量关闭）
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)
