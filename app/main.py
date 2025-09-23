@@ -40,6 +40,7 @@ except Exception:
 
 from app.middlewares.rate_limit import RateLimitMiddleware
 from app.openapi_extra import add_api_key_security
+from app.routers import health  # health route
 
 
 # ---------- 本地兜底中间件 ----------
@@ -136,6 +137,9 @@ def create_app() -> FastAPI:
         ),
     )
 
+    # 1) 最先注册“健康旁路”
+    app.add_middleware(_HealthBypassMiddleware)
+
     # Request-ID
     if ExternalRequestIdMw:
         app.add_middleware(ExternalRequestIdMw)
@@ -159,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(hs.router, prefix="/v1/hs", tags=["hs"])
     app.include_router(alerts.router, prefix="/v1", tags=["alerts"])
     app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
+    app.include_router(health.router)  # /v1/health
 
     # 可选 trio
     try:
@@ -236,3 +241,14 @@ async def root():
 # 全局限流（可通过环境变量关闭）
 if not os.getenv("DISABLE_RATELIMIT"):
     app.add_middleware(RateLimitMiddleware)
+# ---- Health 硬旁路（最先注册）：任何情况下 /v1/health 必须 200 ----
+class _HealthBypassMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/v1/health":
+            from datetime import datetime, timezone
+            return JSONResponse(
+                status_code=200,
+                content={"ok": True, "ts": datetime.now(timezone.utc).isoformat()},
+                headers={"x-request-id": request.headers.get("x-request-id", str(uuid.uuid4()))},
+            )
+        return await call_next(request)
