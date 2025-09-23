@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# --- compatibility BEGIN ---
+
+# 允许从多种变量里取 Key（谁有用谁）
+KEY="${KEY:-${PP_DEMO_KEY:-${PORTPULSE_API_KEY:-}}}"
+
+# 允许直接传 API_HEADER；否则由 KEY 组装
+if [ -z "${API_HEADER:-}" ] && [ -n "${KEY:-}" ]; then
+  API_HEADER="X-API-Key: ${KEY}"
+fi
+
+# 默认用线上 BASE（CI/本地可覆盖）
+BASE="${BASE:-https://api.useportpulse.com}"
+
+# 统一检查（KEY 与 API_HEADER 至少要有一个）
+if [ -z "${KEY:-}" ] && [ -z "${API_HEADER:-}" ]; then
+  echo "ERR: KEY is empty (set KEY or PP_DEMO_KEY or PORTPULSE_API_KEY, or pass API_HEADER)"
+  exit 1
+fi
+
+# --- compatibility END ---
 KEY="${KEY:-${PP_DEMO_KEY:-}}"
 [ -n "$KEY" ] || { echo "ERR: KEY is empty (set KEY or PP_DEMO_KEY)"; exit 1; }
 API_HEADER="${API_HEADER:-X-API-Key: ${KEY}}"

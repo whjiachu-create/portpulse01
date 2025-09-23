@@ -1,4 +1,4 @@
-name: PR Smoke (local uvicorn)
+name: PR Smoke (online)
 
 on:
   pull_request:
@@ -8,25 +8,34 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-    - name: Install jq
-      run: |
-        sudo apt-get update -y && sudo apt-get install -y jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
       - name: Run PR smoke
         env:
-            KEY: "DEMO_KEY"
-          BASE: "http://127.0.0.1:8080"
+          # 线上 API；如需测本地自行覆盖 BASE
+          BASE: "https://api.useportpulse.com"
           UNLOCODE: "USLAX"
-          API_HEADER: "X-API-Key: dev_key_123"
+          # 任选其一：PORTPULSE_API_KEY / PP_DEMO_KEY / KEY
+          PORTPULSE_API_KEY: ${{ secrets.PORTPULSE_API_KEY }}
+          # PP_DEMO_KEY: ${{ secrets.PP_DEMO_KEY }}   # <- 有需要可解注
+          # KEY: ${{ secrets.PORTPULSE_API_KEY }}     # <- 也可直接用 KEY
         run: bash scripts/smoke_pr.sh
