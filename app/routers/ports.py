@@ -1,3 +1,6 @@
+from app.validators import ensure_valid_unlocode
+CORE_PORTS={"USLAX","USLGB","USNYC","USSAV","USCHS","USORF","USHOU","USSEA","USOAK","USMIA","NLRTM","BEANR","DEHAM","DEBRV","FRLEH","GBFXT","GBLGP","ESVLC","ESALG","GRPIR","CNSHA","CNNGB","CNSZX","CNTAO","KRPUS","SGSIN","MYTPP","THLCH","INNSA","INMUN"}
+
 from __future__ import annotations
 
 import io
@@ -8,6 +11,8 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 
 from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query, Header
+from app.utils.validators import ensure_valid_unlocode
+from app.utils.validators import ensure_valid_unlocode
 
 # Auth
 from app.services.dependencies import require_api_key
@@ -27,6 +32,31 @@ from app.services.overrides import (
 )
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
+
+CORE_PORTS = {"USLAX","USLGB","USNYC","USSAV","USCHS","USORF","USHOU","USSEA","USOAK","USMIA",
+    "NLRTM","BEANR","DEHAM","DEBRV","FRLEH","GBFXT","GBLGP","ESVLC","ESALG","GRPIR",
+    "CNSHA","CNNGB","CNSZX","CNTAO","KRPUS","SGSIN","MYTPP","THLCH","INNSA","INMUN"}
+
+# --- BEGIN UNLOCODE GUARD (auto) ---
+import re as _re
+from fastapi import HTTPException as _HTTPException
+from app.utils.validators import ensure_valid_unlocode
+from app.utils.validators import ensure_valid_unlocode
+
+_ALLOWED_UNLOCODES = set("""
+USLAX USLGB USNYC USSAV USCHS USORF USHOU USSEA USOAK USMIA
+NLRTM BEANR DEHAM DEBRV FRLEH GBFXT GBLGP ESVLC ESALG GRPIR
+CNSHA CNNGB CNSZX CNTAO KRPUS SGSIN MYTPP THLCH INNSA INMUN
+""".split())
+
+_UNLOCODE_RE = _re.compile(r"^[A-Z]{5}$")
+
+def ensure_known_port(unlocode: str):
+    if not _UNLOCODE_RE.match(unlocode or ""):
+        raise _HTTPException(status_code=422, detail="invalid UNLOCODE format (A-Z x5)")
+    if unlocode not in _ALLOWED_UNLOCODES:
+        raise _HTTPException(status_code=404, detail="port not found")
+# --- END UNLOCODE GUARD (auto) ---
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
@@ -225,11 +255,13 @@ def _get_port_service():
 
 @router.get("/{unlocode}/overview")
 async def get_overview(
+    ensure_valid_unlocode(unlocode)
     unlocode: str,
     request: Request,
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
+    unlocode = ensure_valid_unlocode(unlocode, CORE_PORTS)
     """Overview: default JSON; CSV when `format=csv` or `Accept: text/csv`.
     Keeps strong ETag/304 behavior for CSV.
     """
@@ -269,6 +301,7 @@ async def head_overview(
 
 @router.get("/{unlocode}/trend", summary="Port trend (JSON/CSV)")
 async def get_trend(
+    ensure_valid_unlocode(unlocode)
     unlocode: str,
     request: Request,
     window: Optional[int] = Query(None, ge=1, le=30),
@@ -277,6 +310,7 @@ async def get_trend(
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
+    unlocode = ensure_valid_unlocode(unlocode, CORE_PORTS)
     # normalize window param (support legacy ?days=)
     w = _parse_window_tolerant(window, days)
     points = _select_points(unlocode, w)
@@ -334,6 +368,7 @@ async def head_trend(
 
 @router.get("/{unlocode}/snapshot", response_model=_PortOverview, summary="Port snapshot")
 async def snapshot(unlocode: str) -> _PortOverview:
+    ensure_valid_unlocode(unlocode)
     """Legacy flat snapshot derived from trend (override preferred, fallback demo)."""
     return {k: v for k, v in _latest_snapshot_flat(unlocode).items() if not k.startswith("_")}
 

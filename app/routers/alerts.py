@@ -1,4 +1,7 @@
+from app.validators import ensure_valid_unlocode
 from fastapi import APIRouter, Query, Response, Request
+from app.utils.validators import ensure_valid_unlocode
+from app.utils.validators import ensure_valid_unlocode
 from datetime import date, timedelta, datetime, timezone
 from typing import List, Optional, Tuple
 from hashlib import sha256
@@ -8,6 +11,18 @@ import json
 from app.services.alerts import compute_alerts, SeriesPoint
 
 router = APIRouter(tags=["alerts"])
+
+# import guard from ports router if available
+try:
+    from app.routers.ports import ensure_known_port
+except Exception:
+    # fallback minimal format-only check
+    import re as _re
+    from fastapi import HTTPException as _HTTPException
+    _UNLOCODE_RE = _re.compile(r"^[A-Z]{5}$")
+    def ensure_known_port(unlocode: str):
+        if not _UNLOCODE_RE.match(unlocode or ""):
+            raise _HTTPException(status_code=422, detail="invalid UNLOCODE format (A-Z x5)")
 
 # =========================
 # helpers
