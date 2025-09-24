@@ -24,14 +24,13 @@ def _make_meta_payload(now_buck: datetime):
     payload = {
         "type": "object",
         "sources": [
-            {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_ingest_at": "2025-09-17T00:00:00Z"}
+            {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_updated": "2025-09-17T00:00:00Z"}
         ],
         "etl": {"window": "hourly", "retries": 2, "backfill": "30d"},
         "build": {
             "version": os.getenv("PORTPULSE_VERSION", "0.1.1"),
             "commit": os.getenv("PORTPULSE_COMMIT")
         },
-        "as_of": now_buck.isoformat(),
         "updated_at": now_buck.isoformat(), "as_of": now_buck.isoformat(),
     }
     payload["as_of"] = payload["updated_at"]

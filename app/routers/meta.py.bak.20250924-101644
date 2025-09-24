@@ -24,15 +24,14 @@ def _make_meta_payload(now_buck: datetime):
     payload = {
         "type": "object",
         "sources": [
-            {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_ingest_at": "2025-09-17T00:00:00Z"}
+            {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_updated": "2025-09-17T00:00:00Z"}
         ],
         "etl": {"window": "hourly", "retries": 2, "backfill": "30d"},
         "build": {
             "version": os.getenv("PORTPULSE_VERSION", "0.1.1"),
             "commit": os.getenv("PORTPULSE_COMMIT")
         },
-        "as_of": now_buck.isoformat(),
-        "updated_at": now_buck.isoformat(), "as_of": now_buck.isoformat(),
+        "updated_at": now_buck.isoformat(),
     }
     payload["as_of"] = payload["updated_at"]
     return payload
@@ -107,21 +106,5 @@ def version():
     return {
         "version": os.getenv("PORTPULSE_VERSION", os.getenv("APP_VERSION", "0.1.1")),
         "commit": os.getenv("PORTPULSE_COMMIT"),
-        "as_of": datetime.now(timezone.utc).isoformat()
-    }
-
-@router.get("/about", summary="About PortPulse API")
-def about():
-    """
-    轻量只读介绍端点：用于提升 OpenAPI path 数量，不依赖外部数据。
-    走现有鉴权策略（需带 API Key）。
-    """
-    import os
-    from datetime import datetime, timezone
-    return {
-        "name": "PortPulse API",
-        "version": os.getenv("PORTPULSE_VERSION", os.getenv("APP_VERSION", "0.1.1")),
-        "build_commit": os.getenv("PORTPULSE_COMMIT"),
-        "docs": ["/docs", "/redoc", "/openapi.json"],
         "as_of": datetime.now(timezone.utc).isoformat()
     }
