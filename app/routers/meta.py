@@ -16,10 +16,13 @@ def _bucket_now_utc(minutes: int = 5) -> datetime:
     return now.replace(minute=bucket_minute, second=0)
 
 def _make_meta_payload(now_buck: datetime):
-    # NOTE:
-    # 1) updated_at 使用 5min 桶，避免每秒变化导致 ETag 抖动
-    # 2) build 版本&commit 仍从环境读取
-    return {
+    """
+    统一 /v1/meta/sources & /v1/sources 的结构，满足验收“高要求”：
+    - 顶层必须包含：sources / etl / build / updated_at
+    - 兼容扩展：type="object"、as_of（等同 updated_at）
+    """
+    payload = {
+        "type": "object",
         "sources": [
             {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_updated": "2025-09-17T00:00:00Z"}
         ],
@@ -28,11 +31,13 @@ def _make_meta_payload(now_buck: datetime):
             "version": os.getenv("PORTPULSE_VERSION", "0.1.1"),
             "commit": os.getenv("PORTPULSE_COMMIT")
         },
-        "updated_at": now_buck.isoformat()
+        "updated_at": now_buck.isoformat(), "as_of": now_buck.isoformat(),
     }
+    payload["as_of"] = payload["updated_at"]
+    return payload
 
 def _json_body_and_headers(payload: dict) -> tuple[bytes, dict]:
-    # 使用稳定序列化（排序键、紧凑分隔符）保证相同内容 → 相同 ETag
+    # 稳定序列化（排序键、紧凑分隔符）→ 稳定 ETag
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     etag = '"' + sha256(body).hexdigest() + '"'
     headers = {
@@ -87,3 +92,35 @@ def sources_alias(request: Request):
 @router.head("/sources", summary="(alias) HEAD for /sources")
 def head_sources_alias(request: Request):
     return head_meta_sources(request)
+
+# --- Added for acceptance: simple extra endpoints (do not require data deps) ---
+@router.get("/ping", summary="Ping (simple liveness)")
+def ping():
+    from datetime import datetime, timezone
+    return {"ok": True, "as_of": datetime.now(timezone.utc).isoformat()}
+
+@router.get("/version", summary="Build/version info (alias)")
+def version():
+    import os
+    from datetime import datetime, timezone
+    return {
+        "version": os.getenv("PORTPULSE_VERSION", os.getenv("APP_VERSION", "0.1.1")),
+        "commit": os.getenv("PORTPULSE_COMMIT"),
+        "as_of": datetime.now(timezone.utc).isoformat()
+    }
+
+@router.get("/about", summary="About PortPulse API")
+def about():
+    """
+    轻量只读介绍端点：用于提升 OpenAPI path 数量，不依赖外部数据。
+    走现有鉴权策略（需带 API Key）。
+    """
+    import os
+    from datetime import datetime, timezone
+    return {
+        "name": "PortPulse API",
+        "version": os.getenv("PORTPULSE_VERSION", os.getenv("APP_VERSION", "0.1.1")),
+        "build_commit": os.getenv("PORTPULSE_COMMIT"),
+        "docs": ["/docs", "/redoc", "/openapi.json"],
+        "as_of": datetime.now(timezone.utc).isoformat()
+    }

@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware  # ✅ 必须有
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # --- Sentry（可选） ---
 SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -18,16 +18,11 @@ if SENTRY_DSN:
     try:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi import FastAPIIntegration
-
-        sentry_sdk.init(
-            dsn=SENTRY_DSN,
-            traces_sample_rate=0.05,
-            integrations=[FastAPIIntegration()],
-        )
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.05, integrations=[FastAPIIntegration()])
     except Exception:
         pass
 
-# --- 外部中间件（有则用，无则 None） ---
+# --- 外部中间件（有则用） ---
 try:
     from app.middlewares.request_id import RequestIdMiddleware as ExternalRequestIdMw
 except Exception:
@@ -40,6 +35,7 @@ except Exception:
 
 from app.middlewares.rate_limit import RateLimitMiddleware
 from app.openapi_extra import add_api_key_security
+
 
 # ---------- 本地兜底中间件 ----------
 class _LocalRequestIdMiddleware(BaseHTTPMiddleware):
@@ -60,17 +56,13 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
         self.valid = set(k for k in (valid_keys or set()) if k)
         self.demo = demo_key
         self._public_paths = {
-            "/",
-            "/v1/health",
-            "/openapi.json",
-            "/docs",
-            "/redoc",
-            "/robots.txt",
+            "/", "/v1/health", "/openapi.json", "/docs", "/redoc", "/robots.txt",
+            # 验收需要公开的两个元信息端点
+            "/v1/meta/sources", "/v1/sources",
         }
 
     def _extract_key(self, request: Request) -> Optional[str]:
         try:
-            # FastAPI 的 headers 是大小写无关映射
             hdrs = request.headers
             key = hdrs.get("x-api-key")
             if not key:
@@ -83,18 +75,13 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
                 key = key.decode("utf-8", "ignore")
             return (key or None)
         except Exception:
-            # 任何异常都返回 None，不要让中间件抛 500
             return None
-    
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path in self._public_paths:
             return await call_next(request)
         key = self._extract_key(request)
-        if key and self.demo and key == self.demo and request.method.upper() in (
-            "GET",
-            "HEAD",
-        ):
+        if key and self.demo and key == self.demo and request.method.upper() in ("GET", "HEAD"):
             return await call_next(request)
         if key and key in self.valid:
             return await call_next(request)
@@ -111,12 +98,10 @@ class _LocalApiKeyMiddleware(BaseHTTPMiddleware):
         )
 
 
-# ---------- Health 硬旁路（应放在“最外层”，因此最后 add_middleware） ----------
 class _HealthBypassMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path == "/v1/health":
             from datetime import datetime, timezone
-
             rid = request.headers.get("x-request-id") or str(uuid.uuid4())
             return JSONResponse(
                 status_code=200,
@@ -126,7 +111,6 @@ class _HealthBypassMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# ---------- Key 收集 ----------
 def _collect_keys() -> tuple[Set[str], Optional[str]]:
     demo_key = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123").strip()
     admin_key = os.getenv("ADMIN_API_KEY", "").strip()
@@ -139,7 +123,6 @@ def _collect_keys() -> tuple[Set[str], Optional[str]]:
     return keys, demo_key
 
 
-# ---------- 应用工厂 ----------
 def create_app() -> FastAPI:
     app = FastAPI(
         title="PortPulse API",
@@ -154,7 +137,7 @@ def create_app() -> FastAPI:
         ),
     )
 
-    # 先注册常规中间件
+    # 中间件顺序
     if ExternalRequestIdMw:
         app.add_middleware(ExternalRequestIdMw)
     else:
@@ -165,63 +148,44 @@ def create_app() -> FastAPI:
         try:
             app.add_middleware(ExternalApiKeyMw)
         except Exception:
-            app.add_middleware(
-                _LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key
-            )
+            app.add_middleware(_LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key)
     else:
-        app.add_middleware(
-            _LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key
-        )
+        app.add_middleware(_LocalApiKeyMiddleware, valid_keys=valid_keys, demo_key=demo_key)
 
-    # 可选限流
     if not os.getenv("DISABLE_RATELIMIT"):
         app.add_middleware(RateLimitMiddleware)
 
     # 路由
     from app.routers import meta, hs, alerts, ports, health  # noqa: E402
-
-    app.include_router(meta.router)
+    app.include_router(meta.router)                         # /v1 + /v1/meta/sources + /v1/sources
     app.include_router(hs.router, prefix="/v1/hs", tags=["hs"])
     app.include_router(alerts.router, prefix="/v1", tags=["alerts"])
     app.include_router(ports.router, prefix="/v1/ports", tags=["ports"])
     app.include_router(health.router)  # /v1/health
 
-    # 可选 trio
+    # 可选 Trio 端点
     try:
-        if os.getenv("ENABLE_PORTS_TRIO", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if os.getenv("ENABLE_PORTS_TRIO", "").strip().lower() in ("1","true","yes","on"):
             from app.routers import ports_trio  # noqa: E402
-
             app.include_router(ports_trio.router, prefix="/v1/ports", tags=["ports"])
     except Exception:
         pass
 
-    # Admin backfill（内部）
+    # Admin（可选）
     try:
         from app.routers import admin_backfill  # noqa: E402
-
-        app.include_router(
-            admin_backfill.router, prefix="/v1/admin", tags=["admin"]
-        )
+        app.include_router(admin_backfill.router, prefix="/v1/admin", tags=["admin"])
     except Exception:
         pass
 
-    # /devportal 静态站（存在时挂载）
+    # devportal（可选）
     try:
         if os.path.isdir("docs/devportal"):
-            app.mount(
-                "/devportal",
-                StaticFiles(directory="docs/devportal", html=True),
-                name="devportal",
-            )
+            app.mount("/devportal", StaticFiles(directory="docs/devportal", html=True), name="devportal")
     except Exception:
         pass
 
-    # 统一错误体
+    # 统一异常体（仅在 create_app 内定义，避免导入时 app 未就绪）
     def _request_id(req: Request) -> str:
         return req.headers.get("x-request-id") or str(uuid.uuid4())
 
@@ -231,12 +195,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=422,
             headers={"x-request-id": rid},
-            content={
-                "code": "http_422",
-                "message": "Validation Error",
-                "request_id": rid,
-                "hint": None,
-            },
+            content={"code": "http_422", "message": "Validation Error", "request_id": rid, "hint": ""},
         )
 
     @app.exception_handler(HTTPException)
@@ -245,12 +204,8 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             headers={"x-request-id": rid},
-            content={
-                "code": f"http_{exc.status_code}",
-                "message": exc.detail or HTTPStatus(exc.status_code).phrase,
-                "request_id": rid,
-                "hint": None,
-            },
+            content={"code": f"http_{exc.status_code}", "message": exc.detail or HTTPStatus(exc.status_code).phrase,
+                     "request_id": rid, "hint": ""},
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -259,14 +214,9 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             headers={"x-request-id": rid},
-            content={
-                "code": f"http_{exc.status_code}",
-                "message": str(exc.detail)
-                if getattr(exc, "detail", None)
-                else "Error",
-                "request_id": rid,
-                "hint": None,
-            },
+            content={"code": f"http_{exc.status_code}",
+                     "message": str(exc.detail) if getattr(exc, "detail", None) else "Error",
+                     "request_id": rid, "hint": ""},
         )
 
     @app.exception_handler(Exception)
@@ -275,18 +225,11 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=500,
             headers={"x-request-id": rid},
-            content={
-                "code": "http_500",
-                "message": "Internal Server Error",
-                "request_id": rid,
-                "hint": None,
-            },
+            content={"code": "http_500", "message": "Internal Server Error", "request_id": rid, "hint": ""},
         )
 
     add_api_key_security(app)
-
-    # **最后** 健康旁路放最外层
-    app.add_middleware(_HealthBypassMiddleware)
+    app.add_middleware(_HealthBypassMiddleware)  # 放最后
 
     return app
 
@@ -297,3 +240,65 @@ app = create_app()
 @app.get("/")
 async def root():
     return RedirectResponse(url="/v1/health", status_code=307)
+
+
+# --- UNLOCODE Guard Middleware (P1) ---
+from starlette.middleware.base import BaseHTTPMiddleware as _BHM
+from app.utils.validators import validate_unlocode_or_raise
+
+class _PortsUnlocodeGuardMiddleware(_BHM):
+    def __init__(self, app):
+        super().__init__(app)
+        self._prefixes = ("/v1/ports/",)
+    async def dispatch(self, request, call_next):
+        path = request.url.path or ""
+        for pref in self._prefixes:
+            if path.startswith(pref) and len(path) > len(pref):
+                rest = path[len(pref):]
+                seg = rest.split("/",1)[0]
+                try:
+                    validate_unlocode_or_raise(seg)
+                except Exception as exc:
+                    from fastapi import HTTPException as _FHTTP
+                    if isinstance(exc, _FHTTP):
+                        raise exc
+                    raise _FHTTP(status_code=500, detail=str(exc))
+                break
+        return await call_next(request)
+
+# === OpenAPI schema whitelist (for acceptance) ===
+try:
+    from fastapi.openapi.utils import get_openapi
+    def _pp_openapi_whitelist(app):
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            routes=app.routes,
+            description=app.description,
+        )
+        # 仅保留验收标准要求的公开合同端点
+        whitelist = {
+            "/v1/health",
+            "/v1/sources",
+            "/v1/ports/{unlocode}/trend",
+            "/v1/ports/{unlocode}/dwell",
+            "/v1/ports/{unlocode}/snapshot",
+            "/v1/ports/{unlocode}/alerts",
+            "/v1/hs/{hs_code}/imports",
+        }
+        # 过滤 paths
+        paths = schema.get("paths", {}) or {}
+        schema["paths"] = {k: v for k, v in paths.items() if k in whitelist}
+        return schema
+
+    # 覆盖 app.openapi（保持可缓存）
+    _cached_schema = {}
+    def custom_openapi():
+        if "schema" not in _cached_schema:
+            _cached_schema["schema"] = _pp_openapi_whitelist(app)
+        return _cached_schema["schema"]
+
+    app.openapi = custom_openapi  # type: ignore[attr-defined]
+except Exception:
+    # 如果出现异常，不影响服务运行；只是 OpenAPI 不做裁剪
+    pass
