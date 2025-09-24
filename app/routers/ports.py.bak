@@ -6,7 +6,6 @@ import logging
 from hashlib import sha256
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
-import os  # 添加 os 模块导入
 
 from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query, Header
 
@@ -28,35 +27,6 @@ from app.services.overrides import (
 )
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
-
-# ----------------------------------------------------------------------
-# Allowed core ports (used by 404 branch in ensure_known_port)
-# ----------------------------------------------------------------------
-CORE_PORTS: set[str] = {
-    "USLAX","USLGB","USNYC","USSAV","USCHS","USORF","USHOU","USSEA","USOAK","USMIA",
-    "NLRTM","BEANR","DEHAM","DEBRV","FRLEH","GBFXT","GBLGP","ESVLC","ESALG","GRPIR",
-    "CNSHA","CNNGB","CNSZX","CNTAO","KRPUS","SGSIN","MYTPP","THLCH","INNSA","INMUN"
-}
-
-# --- BEGIN UNLOCODE GUARD (minimal, no external deps) -----------------
-import re as _re
-from fastapi import HTTPException as _HTTPException
-
-_UNLOCODE_RE = _re.compile(r"^[A-Z]{5}$")
-
-def ensure_known_port(unlocode: str) -> None:
-    """Format 5 uppercase letters -> else 422; if known list present and not included -> 404."""
-    candidate = (unlocode or "").upper()
-    if not _UNLOCODE_RE.match(candidate):
-        raise _HTTPException(
-            status_code=422,
-            detail="invalid UNLOCODE format (A-Z x5)"
-        )
-    # 当有已知清单时才做 404；否则只做格式校验
-    if CORE_PORTS and candidate not in CORE_PORTS:
-        raise _HTTPException(status_code=404, detail="port not found")
-# --- END UNLOCODE GUARD ------------------------------------------------
-
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
@@ -82,13 +52,13 @@ def _parse_window_tolerant(window, days):
             return None
     w = _coerce_one(window)
     if w is None:
-        w = _coerce_one(days)
+            w = _coerce_one(days)
     if w is None:
-        w = 7
+            w = 7
     if w < 1:
-        w = 1
+            w = 1
     if w > 30:
-        w = 30
+            w = 30
     return w
 
 
@@ -131,28 +101,25 @@ def _maybe_304(request: Request, headers: Dict[str, str]) -> Optional[Response]:
         return Response(status_code=304, headers=headers)
     return None
 
-def _select_points(unlocode: str, days: int):
+def _coerce_window(window: Optional[int], days: Optional[int]) -> int:
     """
-    Select points for given port, with demo fallback.
-    If overrides disabled (DISABLE_OVERRIDES=1), always generate fresh demo points (today back).
+    Accept both `window` and legacy `days` as synonyms.
+    Falls back to 7; clamps to [1, 30] to mirror query validators.
     """
-    use_demo = os.getenv("DISABLE_OVERRIDES", "").strip().lower() in ("1", "true", "yes", "on")
+    w = window if window is not None else (days if days is not None else 7)
+    # clamp
+    if w < 1:
+        w = 1
+    if w > 30:
+        w = 30
+    return w
 
-    if not use_demo:
-        # 尝试加载 overrides 数据
-        pts = _load_trend_override(unlocode, days)
-        if pts:
-            return pts
-
-    # fallback: demo data, always fresh to today
-    today = datetime.utcnow().date()
-    pts = []
-    for i in range(days):
-        d = today - timedelta(days=i)
-        val = abs(hash((unlocode, d.isoformat()))) % 500 + 100
-        pts.append({"date": d.isoformat(), "value": val, "src": "demo"})
-    pts.reverse()
-    return pts
+def _select_points(unlocode: str, window: int) -> List[Dict[str, Any]]:
+    """Prefer overrides; fall back to demo; enforce window."""
+    ov = load_trend_override(unlocode, window) or {}
+    pts = (ov.get("points") or []) or _demo_trend_points(unlocode, window)
+    payload = enforce_window({"unlocode": unlocode.upper(), "points": pts}, window)
+    return payload["points"]
 
 def _trend_csv(points: List[Dict[str, Any]]) -> str:
     buf = io.StringIO()
@@ -263,8 +230,6 @@ async def get_overview(
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
     """Overview: default JSON; CSV when `format=csv` or `Accept: text/csv`.
     Keeps strong ETag/304 behavior for CSV.
     """
@@ -283,7 +248,6 @@ async def get_overview(
     # CSV + strong ETag + conditional 304
     csv_text = _overview_csv_from_snapshot(snap)
     headers = _etag_headers(csv_text, "ports:overview:strong-etag")
-    headers["Content-Type"] = "text/csv; charset=utf-8"
     maybe = _maybe_304(request, headers)
     if maybe:
         return maybe
@@ -296,11 +260,8 @@ async def head_overview(
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
     csv_text = _overview_csv_from_snapshot(_latest_snapshot_flat(unlocode))
     headers = _etag_headers(csv_text, "ports:overview:strong-etag")
-    headers["Content-Type"] = "text/csv; charset=utf-8"
     maybe = _maybe_304(request, headers)
     if maybe:
         return maybe
@@ -316,9 +277,6 @@ async def get_trend(
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
-
     # normalize window param (support legacy ?days=)
     w = _parse_window_tolerant(window, days)
     points = _select_points(unlocode, w)
@@ -339,11 +297,10 @@ async def get_trend(
         fmt = "csv" if ("text/csv" in acc) else "json"
 
     if fmt == "json":
-        return {"unlocode": unlocode, "points": points}
+        return {"unlocode": unlocode.upper(), "points": points}
 
     csv_text = _trend_csv(points)
     headers = _etag_headers(csv_text, "ports:trend:strong-etag")
-    headers["Content-Type"] = "text/csv; charset=utf-8"
     maybe = _maybe_304(request, headers)
     if maybe:
         return maybe
@@ -359,9 +316,6 @@ async def head_trend(
     format: Optional[str] = Query(None, pattern="^(json|csv)$"),
     accept: Optional[str] = Header(None),
 ):
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
-
     w = _parse_window_tolerant(window, days)
     pts = _select_points(unlocode, w)
     if limit is not None:
@@ -373,7 +327,6 @@ async def head_trend(
             pass
     csv_text = _trend_csv(pts)
     headers = _etag_headers(csv_text, "ports:trend:strong-etag")
-    headers["Content-Type"] = "text/csv; charset=utf-8"
     maybe = _maybe_304(request, headers)
     if maybe:
         return maybe
@@ -381,8 +334,6 @@ async def head_trend(
 
 @router.get("/{unlocode}/snapshot", response_model=_PortOverview, summary="Port snapshot")
 async def snapshot(unlocode: str) -> _PortOverview:
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
     """Legacy flat snapshot derived from trend (override preferred, fallback demo)."""
     return {k: v for k, v in _latest_snapshot_flat(unlocode).items() if not k.startswith("_")}
 
@@ -398,9 +349,6 @@ async def port_calls(
     limit: Optional[int] = 100,
     offset: Optional[int] = 0,
 ) -> List[_PortCallExpanded]:
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
-
     start_d, end_d = _parse_date_range(start_date, end_date)
     l, o = _validate_pagination(limit, offset)
 
@@ -450,9 +398,6 @@ async def processed_port_calls(
     limit: Optional[int] = 100,
     offset: Optional[int] = 0,
 ) -> List[_PortCallProcessed]:
-    ensure_known_port(unlocode)
-    unlocode = unlocode.upper()
-
     start_d, end_d = _parse_date_range(start_date, end_date)
     l, o = _validate_pagination(limit, offset)
 

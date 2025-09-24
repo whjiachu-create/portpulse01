@@ -1,20 +1,38 @@
-from fastapi import APIRouter, Query, Response, Request
+# app/routers/hs.py
+from __future__ import annotations
+from fastapi import APIRouter, Query, Response, Request, HTTPException
 from datetime import datetime, timedelta
 from hashlib import sha256
+import os
 
 router = APIRouter(tags=["hs"])
 
+# --- Beta guard (minimal) ---
+
+def _hs_beta_enabled() -> bool:
+    return os.getenv("HS_IMPORTS_ENABLED", "").strip().lower() in ("1","true","yes","on")
+
+def _ensure_hs_beta_open() -> None:
+    if not _hs_beta_enabled():
+        # 403 更贴近“功能关闭”，由全局 handler 包装成 {code,message,request_id,hint}
+        raise HTTPException(
+            status_code=403,
+            detail="HS imports beta is closed"
+        )
+
+# --- Demo data builder ---
+
 def _build_points(code: str, frm: str, to: str, months: int):
-    # 伪数据（可重复、稳定）：按 (code,frm,to) 构造一个简单序列
     base = abs(hash((code, frm, to))) % 5000 + 10000
     today = datetime.utcnow().date().replace(day=1)
     pts = []
     for i in range(months, 0, -1):
-        month = (today.replace(day=1) - timedelta(days=30*i)).replace(day=1)
-        # 简单波动：避免随机
+        month = (today.replace(day=1) - timedelta(days=30 * i)).replace(day=1)
         val = base + (i * 37) % 1200
         pts.append({"month": month.isoformat(), "value": int(val), "src": "demo"})
     return pts
+
+# --- Routes ---
 
 @router.get("/{code}/imports", summary="HS imports (demo)")
 async def hs_imports(
@@ -25,13 +43,14 @@ async def hs_imports(
     format: str = Query("json", pattern="^(json|csv)$"),
     request: Request = None,
 ):
+    _ensure_hs_beta_open()  # guard first
+
     points = _build_points(code, frm, to, months)
 
     if format == "csv":
         rows = ["month,value,src"] + [f'{p["month"]},{p["value"]},{p["src"]}' for p in points]
         csv_text = "\n".join(rows) + "\n"
         etag = '"' + sha256(csv_text.encode("utf-8")).hexdigest() + '"'
-        # 条件请求
         inm = request.headers.get("if-none-match") if request else None
         if inm:
             cands = [s.strip() for s in inm.split(",")]
@@ -51,12 +70,12 @@ async def hs_imports(
             }
         )
 
-    # JSON
     return {
         "code": code, "frm": frm, "to": to,
         "as_of": datetime.utcnow().isoformat() + "Z",
         "points": points,
     }
+
 @router.head("/{code}/imports")
 async def hs_imports_head(
     code: str,
@@ -66,8 +85,9 @@ async def hs_imports_head(
     format: str = "json",
     request: Request = None,
 ):
+    _ensure_hs_beta_open()  # guard first
+
     points = _build_points(code, frm, to, months)
-    # 仅对 CSV 严格计算 ETag/304；JSON 就返回 200 + 缓存头即可
     if format == "csv":
         rows = ["month,value,src"] + [f'{p["month"]},{p["value"]},{p["src"]}' for p in points]
         csv_text = "\n".join(rows) + "\n"

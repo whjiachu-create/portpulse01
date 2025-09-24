@@ -70,7 +70,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if request.method.upper() == "OPTIONS" or request.url.path in self.public_paths:
             return await call_next(request)
 
-        if key and self.demo_key and key == self.demo_key and request.method.upper() == "GET":
+        if key and self.demo_key and key == self.demo_key and request.method.upper() in ("GET","HEAD"):
             return await call_next(request)
 
         if key and key in self.valid_keys:
