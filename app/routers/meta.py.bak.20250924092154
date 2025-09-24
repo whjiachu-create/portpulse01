@@ -6,39 +6,25 @@ import os
 
 router = APIRouter(prefix="/v1", tags=["meta"])
 
-# -----------------------
-# helpers
-# -----------------------
 def _bucket_now_utc(minutes: int = 5) -> datetime:
-    """Round 'now' to N-minute buckets for ETag stability."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
     bucket_minute = (now.minute // minutes) * minutes
     return now.replace(minute=bucket_minute, second=0)
 
 def _make_meta_payload(now_buck: datetime):
-    """
-    统一 /v1/meta/sources & /v1/sources 的结构，满足验收“高要求”：
-    - 顶层必须包含：sources / etl / build / updated_at
-    - 兼容扩展：type="object"、as_of（等同 updated_at）
-    """
-    payload = {
-        "type": "object",
+    return {
         "sources": [
-            {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_ingest_at": "2025-09-17T00:00:00Z"}
+            {"name": "demo", "type": "synthetic", "freshness": "PT30M", "last_updated": "2025-09-17T00:00:00Z"}
         ],
         "etl": {"window": "hourly", "retries": 2, "backfill": "30d"},
         "build": {
             "version": os.getenv("PORTPULSE_VERSION", "0.1.1"),
             "commit": os.getenv("PORTPULSE_COMMIT")
         },
-        "as_of": now_buck.isoformat(),
-        "updated_at": now_buck.isoformat(), "as_of": now_buck.isoformat(),
+        "updated_at": now_buck.isoformat()
     }
-    payload["as_of"] = payload["updated_at"]
-    return payload
 
 def _json_body_and_headers(payload: dict) -> tuple[bytes, dict]:
-    # 稳定序列化（排序键、紧凑分隔符）→ 稳定 ETag
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     etag = '"' + sha256(body).hexdigest() + '"'
     headers = {
@@ -53,14 +39,11 @@ def _maybe_304(request: Request, headers: dict) -> Response | None:
     inm = request.headers.get("if-none-match")
     if not inm:
         return None
-    candidates = [s.strip() for s in inm.split(",")]
-    if headers["ETag"] in candidates or f'W/{headers["ETag"]}' in candidates:
-        return Response(status_code=304, headers=headers)
+    for s in (h.strip() for h in inm.split(",")):
+        if s == headers["ETag"] or s == f'W/{headers["ETag"]}':
+            return Response(status_code=304, headers=headers)
     return None
 
-# -----------------------
-# routes
-# -----------------------
 @router.get("/health", summary="Liveness/Readiness")
 def health():
     return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
@@ -85,7 +68,6 @@ def head_meta_sources(request: Request):
         return maybe
     return Response(status_code=200, headers=headers)
 
-# 兼容别名：/v1/sources
 @router.get("/sources", summary="(alias) Data sources & ETL metadata")
 def sources_alias(request: Request):
     return meta_sources(request)
@@ -93,35 +75,3 @@ def sources_alias(request: Request):
 @router.head("/sources", summary="(alias) HEAD for /sources")
 def head_sources_alias(request: Request):
     return head_meta_sources(request)
-
-# --- Added for acceptance: simple extra endpoints (do not require data deps) ---
-@router.get("/ping", summary="Ping (simple liveness)")
-def ping():
-    from datetime import datetime, timezone
-    return {"ok": True, "as_of": datetime.now(timezone.utc).isoformat()}
-
-@router.get("/version", summary="Build/version info (alias)")
-def version():
-    import os
-    from datetime import datetime, timezone
-    return {
-        "version": os.getenv("PORTPULSE_VERSION", os.getenv("APP_VERSION", "0.1.1")),
-        "commit": os.getenv("PORTPULSE_COMMIT"),
-        "as_of": datetime.now(timezone.utc).isoformat()
-    }
-
-@router.get("/about", summary="About PortPulse API")
-def about():
-    """
-    轻量只读介绍端点：用于提升 OpenAPI path 数量，不依赖外部数据。
-    走现有鉴权策略（需带 API Key）。
-    """
-    import os
-    from datetime import datetime, timezone
-    return {
-        "name": "PortPulse API",
-        "version": os.getenv("PORTPULSE_VERSION", os.getenv("APP_VERSION", "0.1.1")),
-        "build_commit": os.getenv("PORTPULSE_COMMIT"),
-        "docs": ["/docs", "/redoc", "/openapi.json"],
-        "as_of": datetime.now(timezone.utc).isoformat()
-    }
