@@ -1,0 +1,57 @@
+*** Begin Patch
+*** Update File: app/routers/ports.py
+@@
+-from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query, Header
++from fastapi import APIRouter, Request, Response, HTTPException, Depends, Query, Header
++from app.utils.validators import ensure_valid_unlocode
+@@
+-router = APIRouter(dependencies=[Depends(require_api_key)])
++router = APIRouter(dependencies=[Depends(require_api_key)])
++
++# 临时：Core30 白名单（可替换为从 ports_catalog 读取）
++CORE_PORTS = {
++    "USLAX","USLGB","USNYC","USSAV","USCHS","USORF","USHOU","USSEA","USOAK","USMIA",
++    "NLRTM","BEANR","DEHAM","DEBRV","FRLEH","GBFXT","GBLGP","ESVLC","ESALG","GRPIR",
++    "CNSHA","CNNGB","CNSZX","CNTAO","KRPUS","SGSIN","MYTPP","THLCH","INNSA","INMUN"
++}
+@@
+-@router.get("/{unlocode}/overview")
+-async def get_overview(
++@router.get("/{unlocode}/overview")
++async def get_overview(
+     unlocode: str,
+     request: Request,
+     response: Response,
+     format: str = Query(default="json"),
+ ):
++    # 统一 UNLOCODE 校验（非法 422；不存在 404）
++    unlocode = ensure_valid_unlocode(unlocode, CORE_PORTS)
+@@
+-@router.get("/{unlocode}/trend", summary="Port trend (JSON/CSV)")
+-async def get_trend(
++@router.get("/{unlocode}/trend", summary="Port trend (JSON/CSV)")
++async def get_trend(
+     unlocode: str,
+     request: Request,
+     response: Response,
+     days: int = Query(default=7, ge=1, le=365),
+     fields: str | None = Query(default=None),
+     limit: int = Query(default=30, ge=1, le=1000),
+     offset: int = Query(default=0, ge=0, le=100000),
+     format: str = Query(default="json"),
+     x_if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+ ):
++    unlocode = ensure_valid_unlocode(unlocode, CORE_PORTS)
+@@
+-@router.get("/{unlocode}/snapshot", response_model=_PortOverview, summary="Port snapshot")
+-async def get_snapshot(unlocode: str):
++@router.get("/{unlocode}/snapshot", response_model=_PortOverview, summary="Port snapshot")
++async def get_snapshot(unlocode: str):
++    unlocode = ensure_valid_unlocode(unlocode, CORE_PORTS)
+@@
+-@router.get("/{unlocode}/calls", response_model=List[_PortCallExpanded], summary="Port Calls", tags=["ports"])
+-async def get_calls(unlocode: str, limit: int = Query(default=50, ge=1, le=1000)):
++@router.get("/{unlocode}/calls", response_model=List[_PortCallExpanded], summary="Port Calls", tags=["ports"])
++async def get_calls(unlocode: str, limit: int = Query(default=50, ge=1, le=1000)):
++    unlocode = ensure_valid_unlocode(unlocode, CORE_PORTS)
+*** End Patch

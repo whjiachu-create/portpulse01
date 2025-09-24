@@ -1,0 +1,83 @@
+
+===== 0. Env snapshot =====
+BASE=https://api.useportpulse.com
+TIMEOUT=15
+API_KEY prefix=pp_live...
+DEMO_KEY=dev_demo_123
+
+===== 1) Contract & Auth =====
+[32m✅ health OK (2025-09-23T13:04:05.774222+00:00)[0m
+openapi/version: 3.1.0 0.1.1
+[32m✅ unauthorized=401[0m
+[32m✅ authorized=200[0m
+
+===== 2) Error Envelope & Invalid UNLOCODE (应 4xx + 统一错误体) =====
+HTTP/2 200 
+date: Tue, 23 Sep 2025 13:04:13 GMT
+content-type: application/json
+content-length: 786
+server: cloudflare
+x-railway-edge: railway/europe-west4-drams3a
+x-railway-request-id: 0wm51ViaRA-0tlAQYqdHTg
+x-request-id: a558b995-6f3c-437e-8f4f-8cfe483d8ff9
+cf-cache-status: DYNAMIC
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+[31m❌ invalid UNLOCODE returns 200 (期望 4xx)。需修复 #1。[0m
+[33m⚠️  错误体非统一(keys=points,unlocode)[0m
+
+===== 3) CSV ETag / 304 / HEAD parity =====
+[32m✅ 首次返回 ETag: "e2fc068f4c386ef54c5d9d522644d0265b3c366c4455973674ecbd791a6b8184"[0m
+[32m✅ If-None-Match 命中 304[0m
+[32m✅ HEAD ETag 与 GET 一致[0m
+[32m✅ Cache-Control OK[0m
+
+===== 4) Core30 30d 连续性（points=30） =====
+USLAX  points=30
+USLGB  points=30
+USNYC  points=30
+USSAV  points=30
+USCHS  points=30
+USORF  points=30
+USHOU  points=30
+USSEA  points=30
+USOAK  points=30
+USMIA  points=30
+NLRTM  points=30
+BEANR  points=30
+DEHAM  points=30
+DEBRV  points=30
+FRLEH  points=30
+GBFXT  points=30
+GBLGP  points=30
+ESVLC  points=30
+ESALG  points=30
+GRPIR  points=30
+CNSHA  points=30
+CNNGB  points=30
+CNSZX  points=30
+CNTAO  points=30
+KRPUS  points=30
+SGSIN  points=30
+MYTPP  points=30
+THLCH  points=30
+INNSA  points=30
+INMUN  points=30
+[32m✅ Core30 全部 30/30[0m
+
+===== 5) JSON/CSV parity（字段一致） =====
+JSON: date,vessels,avg_wait_hours,congestion_score,src,as_of
+CSV : date,vessels,avg_wait_hours,congestion_score,src,as_of
+[32m✅ JSON/CSV 字段一致[0m
+
+===== 6) Alerts shape（object.items[] 且含 severity/explain） =====
+{
+  "date": "2025-09-22",
+  "severity": "low",
+  "explain": "Δ vs baseline=28.0h; IQR=3.0h; cp=1.0"
+}
+[32m✅ Alerts 结构/字段 OK[0m
+
+===== 7) HS imports beta（按 openapi 要求） =====
+[33m⚠️  HS imports 返回 422，若为 422 需校对 openapi 与实现一致性[0m
+
+===== 8) CORS 预检（OPTIONS 可 405 但需 Allow） =====

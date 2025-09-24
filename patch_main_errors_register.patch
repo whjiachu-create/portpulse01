@@ -1,0 +1,12 @@
+*** Begin Patch
+*** Update File: app/main.py
+@@
+-from fastapi import FastAPI, Request, HTTPException
++from fastapi import FastAPI, Request, HTTPException
++from app.errors import register_exception_handlers as _register_errors
+@@
+-    # existing middlewares...
++    # existing middlewares...
++    # 统一错误体封装（x-request-id 透传）：{code,message,request_id,hint}
++    _register_errors(app)
+*** End Patch

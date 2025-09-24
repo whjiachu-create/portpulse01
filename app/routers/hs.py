@@ -1,89 +1,15 @@
-from fastapi import APIRouter, Query, Response, Request
-from datetime import datetime, timedelta
-from hashlib import sha256
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter(tags=["hs"])
 
-def _build_points(code: str, frm: str, to: str, months: int):
-    # 伪数据（可重复、稳定）：按 (code,frm,to) 构造一个简单序列
-    base = abs(hash((code, frm, to))) % 5000 + 10000
-    today = datetime.utcnow().date().replace(day=1)
-    pts = []
-    for i in range(months, 0, -1):
-        month = (today.replace(day=1) - timedelta(days=30*i)).replace(day=1)
-        # 简单波动：避免随机
-        val = base + (i * 37) % 1200
-        pts.append({"month": month.isoformat(), "value": int(val), "src": "demo"})
-    return pts
-
-@router.get("/{code}/imports", summary="HS imports (demo)")
-async def hs_imports(
-    code: str,
-    frm: str = Query(..., min_length=2, max_length=3, description="Origin ISO-2/3"),
-    to:  str = Query(..., min_length=2, max_length=3, description="Destination ISO-2/3"),
-    months: int = Query(6, ge=1, le=36),
-    format: str = Query("json", pattern="^(json|csv)$"),
-    request: Request = None,
-):
-    points = _build_points(code, frm, to, months)
-
-    if format == "csv":
-        rows = ["month,value,src"] + [f'{p["month"]},{p["value"]},{p["src"]}' for p in points]
-        csv_text = "\n".join(rows) + "\n"
-        etag = '"' + sha256(csv_text.encode("utf-8")).hexdigest() + '"'
-        # 条件请求
-        inm = request.headers.get("if-none-match") if request else None
-        if inm:
-            cands = [s.strip() for s in inm.split(",")]
-            if etag in cands or f"W/{etag}" in cands:
-                return Response(status_code=304, headers={
-                    "ETag": etag,
-                    "Cache-Control": "public, max-age=300, no-transform",
-                    "Vary": "Accept-Encoding",
-                })
-        return Response(
-            content=csv_text.encode("utf-8"),
-            media_type="text/csv; charset=utf-8",
-            headers={
-                "ETag": etag,
-                "Cache-Control": "public, max-age=300, no-transform",
-                "Vary": "Accept-Encoding",
-            }
-        )
-
-    # JSON
-    return {
-        "code": code, "frm": frm, "to": to,
-        "as_of": datetime.utcnow().isoformat() + "Z",
-        "points": points,
-    }
-@router.head("/{code}/imports")
-async def hs_imports_head(
-    code: str,
-    frm: str,
-    to: str,
-    months: int = 6,
-    format: str = "json",
-    request: Request = None,
-):
-    points = _build_points(code, frm, to, months)
-    # 仅对 CSV 严格计算 ETag/304；JSON 就返回 200 + 缓存头即可
-    if format == "csv":
-        rows = ["month,value,src"] + [f'{p["month"]},{p["value"]},{p["src"]}' for p in points]
-        csv_text = "\n".join(rows) + "\n"
-        etag = '"' + sha256(csv_text.encode("utf-8")).hexdigest() + '"'
-        inm = request.headers.get("if-none-match") if request else None
-        if inm:
-            cands = [s.strip() for s in inm.split(",")]
-            if etag in cands or f"W/{etag}" in cands:
-                return Response(status_code=304, headers={
-                    "ETag": etag,
-                    "Cache-Control": "public, max-age=300, no-transform",
-                    "Vary": "Accept-Encoding",
-                })
-        return Response(status_code=200, headers={
-            "ETag": etag,
-            "Cache-Control": "public, max-age=300, no-transform",
-            "Vary": "Accept-Encoding",
-        })
-    return Response(status_code=200, headers={"Cache-Control": "public, max-age=60, no-transform"})
+@router.get("/{hs_code}/imports", summary="HS Imports (beta-gated)")
+def hs_imports_beta(hs_code: str, from_: str | None = None, to: str | None = None, format: str | None = None):
+    # 功能未启用：按验收要求 → 4xx（403更贴切），并让全局异常处理器统一成四字段
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "beta_disabled",
+            "message": "HS imports API is not enabled on this environment",
+            "hint": "Contact support to enable beta access",
+        },
+    )

@@ -1,0 +1,19 @@
+*** Begin Patch
+*** Update File: app/routers/alerts.py
+@@
+-from fastapi import APIRouter, Query, Response, Request
++from fastapi import APIRouter, Query, Response, Request
++from app.utils.validators import ensure_valid_unlocode
+@@
+-@router.get("/ports/{unlocode}/alerts", summary="Dwell change alerts (v1)")
+-async def alerts(
++@router.get("/ports/{unlocode}/alerts", summary="Dwell change alerts (v1)")
++async def alerts(
+     unlocode: str,
+     request: Request,
+     response: Response,
+     window: str = Query(default="14d"),
+ ):
++    # 统一 UNLOCODE 校验
++    unlocode = ensure_valid_unlocode(unlocode)
+*** End Patch
