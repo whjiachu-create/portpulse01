@@ -266,68 +266,53 @@ class _PortsUnlocodeGuardMiddleware(_BHM):
                 break
         return await call_next(request)
 
-# === OpenAPI schema whitelist (for acceptance) ===
-try:
-    from fastapi.openapi.utils import get_openapi
-    def _pp_openapi_whitelist(app):
-        schema = get_openapi(
-            title=app.title,
-            version=app.version,
-            routes=app.routes,
-            description=app.description,
-        )
-        # 仅保留验收标准要求的公开合同端点
-        whitelist = {
-            "/v1/health",
-            "/v1/sources",
-            "/v1/ports/{unlocode}/trend",
-            "/v1/ports/{unlocode}/dwell",
-            "/v1/ports/{unlocode}/snapshot",
-            "/v1/ports/{unlocode}/alerts",
-            "/v1/hs/{hs_code}/imports",
-        }
-        # 过滤 paths
-        paths = schema.get("paths", {}) or {}
-        schema["paths"] = {k: v for k, v in paths.items() if k in whitelist}
-        return schema
+# === OpenAPI schema whitelist + alias (contract-only) ===
+from fastapi.openapi.utils import get_openapi
 
-    # 覆盖 app.openapi（保持可缓存）
-    _cached_schema = {}
-    def custom_openapi():
-        if "schema" not in _cached_schema:
-            _cached_schema["schema"] = _pp_openapi_whitelist(app)
-        return _cached_schema["schema"]
+_OPENAPI_PATH_WHITELIST = {
+    "/v1/health",
+    "/v1/meta/sources",   # 主口径
+    "/v1/sources",        # 兼容别名
+    "/v1/ports/{unlocode}/overview",
+    "/v1/ports/{unlocode}/trend",
+    "/v1/ports/{unlocode}/snapshot",
+    "/v1/ports/{unlocode}/dwell",
+    "/v1/ports/{unlocode}/alerts",
+    "/v1/hs/{hs_code}/imports",
+}
+_OPENAPI_ALIASES = {
+    "/v1/hs/{code}/imports": "/v1/hs/{hs_code}/imports",
+}
 
-    app.openapi = custom_openapi  # type: ignore[attr-defined]
-except Exception:
-    # 如果出现异常，不影响服务运行；只是 OpenAPI 不做裁剪
-    pass
+_cached_openapi_schema = None
 
-# --- OpenAPI post-filter (alias for acceptance) ---
-def _custom_openapi():
-    # 复用/生成 schema
-    if getattr(app, "openapi_schema", None):
-        schema = app.openapi_schema
-    else:
-        schema = get_openapi(
-            title=app.title,
-            version=app.version,
-            description=getattr(app, "description", None),
-            routes=app.routes,
-        )
-    # 添加别名键：/v1/hs/{code}/imports -> 指向 {hs_code} 版本
-    paths = schema.get("paths", {})
-    src = "/v1/hs/{hs_code}/imports"
-    alias = "/v1/hs/{code}/imports"
-    if src in paths and alias not in paths:
-        paths[alias] = paths[src]
-    # 固定回写
-    app.openapi_schema = schema
-    return app.openapi_schema
+def custom_openapi():
+    """Contract-only OpenAPI: whitelist + alias, cached."""
+    global _cached_openapi_schema
+    if _cached_openapi_schema is not None:
+        return _cached_openapi_schema
 
-# 覆盖 FastAPI 的 openapi 生成函数
-if hasattr(globals(), "app") and app:
-    app.openapi = _custom_openapi
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=getattr(app, "description", None),
+        routes=app.routes,
+    )
+
+    paths = schema.get("paths", {}) or {}
+    filtered = {k: v for k, v in paths.items() if k in _OPENAPI_PATH_WHITELIST}
+
+    import copy
+    for alias, src in _OPENAPI_ALIASES.items():
+        if src in filtered and alias not in filtered:
+            filtered[alias] = copy.deepcopy(filtered[src])
+
+    schema["paths"] = filtered
+    _cached_openapi_schema = schema
+    return _cached_openapi_schema
+
+# 覆盖一次即可（放在文件结尾其他 openapi 覆盖语句之前/替换之）
+app.openapi = custom_openapi  # type: ignore
 
 # --- OpenAPI fixup: ensure /v1/hs/{code}/imports alias key is present (acceptance contract) ---
 try:
