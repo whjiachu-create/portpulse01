@@ -1,32 +1,23 @@
-# PortPulse — Public Beta **P1** Milestone (UTC: {{填当前UTC时间}})
-Commit: {{填 GIT_COMMIT.txt 里的哈希}}  ·  API: https://api.useportpulse.com  ·  Docs: https://docs.useportpulse.com
+PortPulse — Public Beta P1 Evidence
+UTC: 2025-09-26T12:44:02Z
+Backup Folder: backups/p1_20250926T113122Z
 
-## 1) Contract (OpenAPI & Endpoints)
-- /v1/health: ✅
-- /v1/ports/{unlocode}/trend: ✅
-- /v1/ports/{unlocode}/dwell: ✅
-- /v1/ports/{unlocode}/snapshot: ✅
-（以 `openapi_paths_*.json` 为准）
+1) OpenAPI Paths Presence
+N/A
 
-## 2) HTTP Behavior
-- Trend CSV ETag 命中：首抓 200，二抓 **304**（`etag_304_*.txt` 证据）✅
-- Cache-Control: `public, max-age=300, no-transform` ✅
-- 统一错误体 & x-request-id：✅
+2) CSV Caching & ETag — 304 Proof (first lines)
+N/A
 
-## 3) Coverage & Freshness (SLO)
-- 覆盖：**67 / 67** 港口，30 天连续（`coverage_*.txt`）✅
-- 新鲜度：**p95 ≤ 2h**；本次实测：**p95_h = {{粘 freshness_*.txt 的数值}}** ✅
-
-## 4) Docs & DevEx
-- Docs: **200 OK**（`/openapi.json` 可下载）✅
-- Quickstart/示例：已具备（后续增强）🟡
-
-## 5) Ops
-- Cloudflare 规则：CSV 缓存 & Health Bypass 配置完成 ✅
-- 外部探活：待接入 Better Stack / UptimeRobot 🟡
-- Sentry：等待可访问时补 DSN 🟡
-
-## 6) Data Dump（留痕）
-- 目录：`backups/{{TS}}/data/`（包含 JSON/CSV + snapshot）
-
-> 结论：**P1 准入线达标**（可对外公测）。后续进入 P1+（探活、Sentry、Docs Quickstart、定期 ETL 强化）。
+3) 30-day Replay Sampling
+USLAX OK (30/30)
+USNYC OK (30/30)
+SGSIN OK (30/30)
+NLRTM OK (30/30)
+CNYTN FAIL (/30)
+DEHAM OK (30/30)
+JPTYO FAIL (/30)
+GBFXT OK (30/30)
+AUMEL FAIL (/30)
+BRSSZ FAIL (/30)
+AEJEA FAIL (/30)
+INNSA OK (30/30)
