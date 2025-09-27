@@ -1,32 +1,63 @@
-# PortPulse — Public Beta **P1** Milestone (UTC: {{填当前UTC时间}})
-Commit: {{填 GIT_COMMIT.txt 里的哈希}}  ·  API: https://api.useportpulse.com  ·  Docs: https://docs.useportpulse.com
+PortPulse — Public Beta P1 Evidence
+UTC: 2025-09-26T13:36:38Z
+Backup Folder: backups/p1_20250926T113122Z
 
-## 1) Contract (OpenAPI & Endpoints)
-- /v1/health: ✅
-- /v1/ports/{unlocode}/trend: ✅
-- /v1/ports/{unlocode}/dwell: ✅
-- /v1/ports/{unlocode}/snapshot: ✅
-（以 `openapi_paths_*.json` 为准）
+1) OpenAPI Paths Presence
 
-## 2) HTTP Behavior
-- Trend CSV ETag 命中：首抓 200，二抓 **304**（`etag_304_*.txt` 证据）✅
-- Cache-Control: `public, max-age=300, no-transform` ✅
-- 统一错误体 & x-request-id：✅
 
-## 3) Coverage & Freshness (SLO)
-- 覆盖：**67 / 67** 港口，30 天连续（`coverage_*.txt`）✅
-- 新鲜度：**p95 ≤ 2h**；本次实测：**p95_h = {{粘 freshness_*.txt 的数值}}** ✅
+2) CSV Caching & ETag — 304 Proof (first lines)
 
-## 4) Docs & DevEx
-- Docs: **200 OK**（`/openapi.json` 可下载）✅
-- Quickstart/示例：已具备（后续增强）🟡
 
-## 5) Ops
-- Cloudflare 规则：CSV 缓存 & Health Bypass 配置完成 ✅
-- 外部探活：待接入 Better Stack / UptimeRobot 🟡
-- Sentry：等待可访问时补 DSN 🟡
-
-## 6) Data Dump（留痕）
-- 目录：`backups/{{TS}}/data/`（包含 JSON/CSV + snapshot）
-
-> 结论：**P1 准入线达标**（可对外公测）。后续进入 P1+（探活、Sentry、Docs Quickstart、定期 ETL 强化）。
+3) 30-day Replay Sampling
+USLAX OK (30/30)
+USLGB OK (30/30)
+USNYC OK (30/30)
+USSAV OK (30/30)
+USCHS OK (30/30)
+USORF OK (30/30)
+USHOU OK (30/30)
+USSEA OK (30/30)
+USOAK OK (30/30)
+USMIA OK (30/30)
+NLRTM OK (30/30)
+BEANR OK (30/30)
+DEHAM OK (30/30)
+DEBRV OK (30/30)
+FRLEH OK (30/30)
+GBFXT OK (30/30)
+GBLGP OK (30/30)
+ESVLC OK (30/30)
+ESALG OK (30/30)
+GRPIR OK (30/30)
+CNSHA OK (30/30)
+CNNGB OK (30/30)
+CNSZX OK (30/30)
+CNTAO OK (30/30)
+KRPUS OK (30/30)
+SGSIN OK (30/30)
+MYTPP OK (30/30)
+THLCH OK (30/30)
+INNSA OK (30/30)
+INMUN OK (30/30)
+USTIW FAIL (/30)
+USBAL FAIL (/30)
+USPHL FAIL (/30)
+USJAX FAIL (/30)
+USMOB FAIL (/30)
+CAVAN FAIL (/30)
+CAPRR FAIL (/30)
+ESBCN FAIL (/30)
+PLGDN FAIL (/30)
+SEGOT FAIL (/30)
+SIKOP FAIL (/30)
+CNXMN FAIL (/30)
+CNTNJ FAIL (/30)
+JPTYO FAIL (/30)
+JPYOK FAIL (/30)
+JPNGO FAIL (/30)
+VNSGN FAIL (/30)
+IDTPP FAIL (/30)
+PHMNL FAIL (/30)
+AEJEA FAIL (/30)
+OMSLL FAIL (/30)
+LKCMB FAIL (/30)
