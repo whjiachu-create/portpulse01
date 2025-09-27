@@ -12,6 +12,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
+# ✨ 新增：CORS 中间件
+from fastapi.middleware.cors import CORSMiddleware
+
 # --- Sentry（可选） ---
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 if SENTRY_DSN:
@@ -111,6 +114,28 @@ class _HealthBypassMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# ✨ 新增：统一响应头中间件（暴露头 + 默认缓存策略）
+class _CommonHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        # 暴露关键头，便于前端获取
+        response.headers.setdefault(
+            "Access-Control-Expose-Headers",
+            "ETag, Content-Length, Content-Type, X-Request-ID",
+        )
+
+        # 只读端点默认缓存策略（若业务已设置则尊重，并补齐 no-transform）
+        # 你的规范：public, max-age=300；建议统一带 no-transform
+        cc = response.headers.get("Cache-Control")
+        if not cc:
+            response.headers["Cache-Control"] = "public, max-age=300, no-transform"
+        elif "no-transform" not in cc.lower():
+            response.headers["Cache-Control"] = f"{cc}, no-transform"
+
+        return response
+
+
 def _collect_keys() -> tuple[Set[str], Optional[str]]:
     demo_key = os.getenv("NEXT_PUBLIC_DEMO_API_KEY", "dev_demo_123").strip()
     admin_key = os.getenv("ADMIN_API_KEY", "").strip()
@@ -137,11 +162,24 @@ def create_app() -> FastAPI:
         ),
     )
 
-    # 中间件顺序
+    # ✨ 新增：CORS（放开只读端点；公开 API 建议 *）
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "HEAD", "OPTIONS"],
+        allow_headers=["*", "X-API-Key", "Authorization"],
+        expose_headers=["ETag", "Content-Length", "Content-Type", "X-Request-ID"],
+        max_age=3600,
+    )
+
+    # 中间件顺序（保持你原先逻辑）
     if ExternalRequestIdMw:
         app.add_middleware(ExternalRequestIdMw)
     else:
         app.add_middleware(_LocalRequestIdMiddleware)
+
+    # ✨ 新增：统一响应头（暴露头/缓存策略）
+    app.add_middleware(_CommonHeadersMiddleware)
 
     valid_keys, demo_key = _collect_keys()
     if ExternalApiKeyMw:
@@ -328,3 +366,9 @@ try:
 except Exception:
     # 不影响服务主流程
     pass
+
+
+# ✨ 新增：兜底 OPTIONS（用于 CORS 预检；让未显式声明的路径也返回 204）
+@app.options("/{full_path:path}")
+async def _options_all(full_path: str):
+    return JSONResponse(status_code=204, content=None)
