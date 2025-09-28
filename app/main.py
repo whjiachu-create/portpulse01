@@ -245,11 +245,15 @@ def create_app() -> FastAPI:
     app.include_router(health.router)  # /v1/health
 
     # 内部密钥与 Stripe（如存在）
+    # 内部密钥与 Stripe（如存在）
+    import logging
     try:
         from app.routers import internal_keys  # noqa: E402
+    except Exception as e:
+        logging.error("❌ Failed to load internal_keys router: %s", e)
+    else:
         app.include_router(internal_keys.router)  # /internal/keys/...
-    except Exception:
-        pass
+        logging.info("✅ internal_keys router loaded")
     try:
         from app.routers import stripe_webhook  # noqa: E402
         app.include_router(stripe_webhook.router)
