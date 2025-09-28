@@ -1,0 +1,203 @@
+From 1c3f2d9f0f1a0b3c7a3e7d2c1b9f7a6e1a2b3c4d Mon Sep 17 00:00:00 2001
+From: PortPulse Ops <ops@useportpulse.com>
+Date: Sun, 28 Sep 2025 08:55:00 +0000
+Subject: [PATCH] docs: add ops-cheatsheet.md 运维手册 (PBB v1.3)
+
+Add customer-facing operations cheat sheet: key issuing, lifecycle
+management, routine acceptance checks, failure playbook, and quick
+curl/jq snippets. Clarifies that /internal/keys is internal-only and
+should be called from local/bastion.
+
+---
+ docs/ops-cheatsheet.md | 242 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 242 insertions(+)
+ create mode 100644 docs/ops-cheatsheet.md
+
+diff --git a/docs/ops-cheatsheet.md b/docs/ops-cheatsheet.md
+new file mode 100644
+index 0000000..b7b7b7b
+--- /dev/null
++++ b/docs/ops-cheatsheet.md
+@@ -0,0 +242 @@
++# PortPulse 运维手册（PBB v1.3）
++
++> 目标：**发 Key → 客户对接 → 生命周期管理（续订/吊销）→ 稳定性验收**  
++> 重要：`/internal/keys/*` 为**内部端点**，**公网网关已屏蔽**；需在**本地/堡垒机直连**服务执行发放与管理。
++
++---
++
++## 1) Key 发放（内部执行）
++
++### 方式 A：本地/运维节点直连（推荐）
++```bash
++export BASE_LOCAL="http://127.0.0.1:8080"       # 开发/内网运行的服务
++export VAL="pp_admin_xxxxxxxxxxxxxxxxx"        # ADMIN_API_KEY（管理员密钥）
++
++# 发放（示例：Starter 计划，3 个月）
++curl -fsS -X POST "$BASE_LOCAL/internal/keys/issue" \
++  -H "Authorization: Bearer $VAL" \
++  -H "Content-Type: application/json" \
++  -d '{"owner_email":"client@example.com","plan":"starter","months":3,"prefix":"pp_live_"}' | jq .
++```
++输出中 `api_key` 即客户的唯一凭证，请妥善记录。
++
++### 方式 B：生产直连（仅内网/堡垒机）
++> 公网域名 `https://api.useportpulse.com` 的 `/internal/keys/*` 已由 WAF/网关拒绝（405）。  
++> 如需直连生产实例，请在堡垒机内使用服务直达域（示例，具体以当次部署面板为准）：
++```bash
++export DIRECT_BASE="https://<railway-app-subdomain>.up.railway.app"
++export VAL="pp_admin_xxxxxxxxxxxxxxxxx"
++curl -fsS -X POST "$DIRECT_BASE/internal/keys/issue" \
++  -H "Authorization: Bearer $VAL" \
++  -H "Content-Type: application/json" \
++  -d '{"owner_email":"client@example.com","plan":"starter","months":3,"prefix":"pp_live_"}' | jq .
++```
++
++---
++
++## 2) Key 生命周期管理（内部执行）
++
++### 延期（续订）
++```bash
++curl -fsS -X POST "$BASE_LOCAL/internal/keys/extend" \
++  -H "Authorization: Bearer $VAL" \
++  -H "Content-Type: application/json" \
++  -d '{"api_key":"pp_live_abcdef123456","months":12}' | jq .
++```
++
++### 吊销
++```bash
++curl -fsS -X POST "$BASE_LOCAL/internal/keys/revoke" \
++  -H "Authorization: Bearer $VAL" \
++  -H "Content-Type: application/json" \
++  -d '{"api_key":"pp_live_abcdef123456"}' | jq .
++```
++
++> 提示：用 `jq -nc` 生成 JSON 可避免引号转义问题：
++```bash
++PLAIN="pp_live_xxx..."
++curl -fsS -X POST "$BASE_LOCAL/internal/keys/revoke" \
++  -H "Authorization: Bearer $VAL" \
++  -H "Content-Type: application/json" \
++  --data "$(jq -nc --arg api_key "$PLAIN" '{api_key:$api_key}')" | jq .
++```
++
++---
++
++## 3) 客户对接指引（可转发）
++
++**请求头任选其一：**
++```
++X-API-Key: pp_live_abcdef123456
++```
++或
++```
++Authorization: Bearer pp_live_abcdef123456
++```
++
++**快速自检：**
++```bash
++export BASE="https://api.useportpulse.com"
++export API_KEY="pp_live_abcdef123456"
++curl -fsS $BASE/v1/health | jq .ok
++curl -fsS -H "X-API-Key: $API_KEY" \
++  "$BASE/v1/ports/USLAX/trend?days=7" | jq '.points|length'
++```
++
++---
++
++## 4) 线上日常验收（SLA）
++
++**快速验收（抽检 3 港）：**
++```bash
++export BASE="https://api.useportpulse.com"
++export API_KEY="pp_live_..."     # 生产 key
++scripts/acceptance-run.sh --quick
++```
++
++**全量验收（30 港）：**
++```bash
++scripts/acceptance-run.sh
++```
++
++**ETag/缓存行为示例：**
++```bash
++ETAG=$(curl -sSI -H "X-API-Key: $API_KEY" \
++  "$BASE/v1/ports/USLAX/trend?window=7&format=csv" \
++  | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
++curl -sSI -H "X-API-Key: $API_KEY" -H "If-None-Match: $ETAG" \
++  "$BASE/v1/ports/USLAX/trend?window=7&format=csv" | head -20
++```
++
++**OpenAPI 合同关键路径断言：**
++```bash
++curl -sS "$BASE/openapi.json" \
++| jq -e '(.paths|has("/v1/hs/{hs_code}/imports")) and (.paths|has("/v1/hs/{code}/imports"))'
++```
++
++---
++
++## 5) 故障处理 Playbook
++
++- **401 Unauthorized**  
++  - 检查 key 是否有效/未吊销/未过期；确认请求头是否正确传入。
++- **429 Too Many Requests**  
++  - 触发限流；核查速率，必要时临时放宽或建议客户退避重试。
++- **数据延迟/不新鲜**  
++  - 检查 `/v1/sources` freshness；>2h 时排查 ETL，必要时 backfill。
++- **CORS/预检问题**  
++  - 验证 `OPTIONS` 返回 200/204，允许 `GET, HEAD, OPTIONS`，并暴露 `ETag, Content-Length, Content-Type, X-Request-ID`。
++- **UNLOCODE 入参异常**  
++  - 非法格式应返回 422，合法但不存在返回 404（守卫中间件已生效）。
++
++---
++
++## 6) 本地回归（开发自测）
++
++```bash
++# 启动本地（读取 .env.local）
++uvicorn app.main:app --reload --port 8080 --env-file .env.local
++
++# 读取 ADMIN_API_KEY 并签发/吊销/延期
++export BASE_LOCAL="http://127.0.0.1:8080"
++export VAL="$(awk -F= '/^ADMIN_API_KEY=/{print substr($0, index($0,$2))}' .env.local | tr -d '\r' | xargs)"
++
++curl -fsS -H "Authorization: Bearer $VAL" "$BASE_LOCAL/internal/keys/ping" | jq .
++
++ISSUE=$(curl -fsS -X POST "$BASE_LOCAL/internal/keys/issue" \
++  -H "Authorization: Bearer $VAL" -H "Content-Type: application/json" \
++  -d '{"owner_email":"client@example.com","plan":"starter","months":3,"prefix":"pp_live_"}')
++echo "$ISSUE" | jq .
++PLAIN=$(echo "$ISSUE" | jq -r .api_key)
++
++curl -fsS -X POST "$BASE_LOCAL/internal/keys/revoke" \
++  -H "Authorization: Bearer $VAL" -H "Content-Type: application/json" \
++  -d '{"api_key":"'"$PLAIN"'"}' | jq .
++
++curl -fsS -X POST "$BASE_LOCAL/internal/keys/extend" \
++  -H "Authorization: Bearer $VAL" -H "Content-Type: application/json" \
++  -d '{"api_key":"'"$PLAIN"'","months":3}' | jq .
++```
++
++---
++
++## 7) 附录：运维要点
++
++- `/internal/keys/*` **仅内部可用**：公网上通过 `api.useportpulse.com` 调用会返回 `405`。  
++  使用 **本地/内网直连** 或 **堡垒机直连生产实例** 进行密钥发放与管理。
++- `FORCE_LOCAL_APIKEY=1`：可强制使用本地白名单鉴权中间件（避免外部网关差异）。
++- CORS 预检：`OPTIONS` 已放行；响应包含 `Access-Control-Expose-Headers: ETag, Content-Length, Content-Type, X-Request-ID`。
++- 缓存：默认 `Cache-Control: public, max-age=300, no-transform`；ETag 完整支持 `If-None-Match`。
++- 错误体统一：`{"code":"http_XXX","message":"...","request_id":"...","hint":""}`。
++
++---
++
++**一句话流程**：  
++**下单 → 发放 Key（内部） → 客户接入 → 续订/吊销 → 定期验收（SLA、新鲜度、合同）**
++
++---
++
++© PortPulse PBB v1.3
++
+-- 
+2.45.2
