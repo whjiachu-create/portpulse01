@@ -22,3 +22,9 @@ portpulse-site/
 # node (backend)
 node_modules/
 package-lock.json
+backups/
+.env.local
+dev.db
+docs/*.tmp
+scripts/*.py
+*.csv
