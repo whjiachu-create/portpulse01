@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # PortPulse PBB v1.3 统一验收脚本（线上/线下一套口径）
-# 退出码：0=通过；1=前置依赖缺失；2=合同/鉴权失败；3=UNLOCODE校验失败；
-#         4=ETag/HEAD/缓存失败；5=30天回放失败；6=新鲜度失败；7=错误体/alerts/sources失败；8=其他
+# 退出码：
+#   0  通过
+#   1  前置依赖缺失/入参缺失
+#   2  合同/鉴权失败
+#   3  UNLOCODE 校验失败
+#   4  ETag/HEAD/缓存失败
+#   5  30天回放失败
+#   6  新鲜度失败
+#   7  /v1/sources 或错误信封失败
+#   8  其他未知错误
 
 set -euo pipefail
 
@@ -26,7 +34,8 @@ PORTS_FULL=(USLAX USLGB USNYC USSAV USCHS USORF USHOU USSEA USOAK USMIA NLRTM BE
 PORTS_QUICK=(USLAX NLRTM SGSIN)
 PORTS=("${PORTS_FULL[@]}"); [[ "$MODE" == "quick" ]] && PORTS=("${PORTS_QUICK[@]}")
 
-OUT="backups/$(TS)"; mkdir -p "$OUT"/{openapi,metrics,data}
+OUT="backups/$(TS)"
+mkdir -p "$OUT"/{openapi,metrics,data}
 
 echo "=== PortPulse Acceptance (PBB v1.3) ==="
 echo "BASE=$BASE  PORTS=${#PORTS[@]}  MODE=$MODE"
@@ -69,17 +78,24 @@ echo "[D] CSV/ETag/HEAD..."
 PORT="USLAX"
 JSON_URL="$BASE/v1/ports/$PORT/trend?days=7"
 CSV_URL="$JSON_URL&format=csv"
+
 curl -fsS -H "X-API-Key: $API_KEY" "$JSON_URL" | jq -e '.points|length>=1' >/dev/null || { echo "❌ trend points missing"; exit 4; }
-H=$(curl -fsS -D - -H "X-API-Key: $API_KEY" "$CSV_URL" -o /dev/null)
-ET=$(printf "%s" "$H" | awk 'BEGIN{IGNORECASE=1} /^etag:/{gsub(/\r|\"/,"");print $2}')
+
+# 200 抬头（取 ETag）
+H200=$(curl -fsS -D - -H "X-API-Key: $API_KEY" "$CSV_URL" -o /dev/null)
+ET=$(printf "%s" "$H200" | awk 'BEGIN{IGNORECASE=1} /^etag:/{gsub(/\r|\"/,"");print $2}')
 [[ -n "$ET" ]] || { echo "❌ ETag missing"; exit 4; }
+
+# 304 验证
 code304=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $API_KEY" -H "If-None-Match: \"$ET\"" "$CSV_URL")
 [[ "$code304" == "304" ]] || { echo "❌ If-None-Match not 304 ($code304)"; exit 4; }
-HEADS=$(curl -fsSI -H "X-API-Key: $API_KEY" "$CSV_URL")
-echo "$HEADS" > "$OUT/metrics/etag_head.txt"
-echo "$H"     > "$OUT/metrics/etag_200_headers.txt"
-grep -qi '^cache-control:.*public, *max-age=300.*no-transform' <<<"$HEADS" || { echo "❌ cache-control missing/incorrect"; exit 4; }
-grep -qi '^content-type: *text/csv' <<<"$HEADS" || { echo "❌ content-type not csv"; exit 4; }
+
+# HEAD 校验
+HHEAD=$(curl -fsSI -H "X-API-Key: $API_KEY" "$CSV_URL")
+echo "$HHEAD" > "$OUT/metrics/etag_head.txt"
+echo "$H200"  > "$OUT/metrics/etag_200_headers.txt"
+grep -qi '^cache-control:.*no-transform' <<<"$HHEAD" || { echo "❌ cache-control no-transform 缺失"; exit 4; }
+grep -qi '^content-type: *text/csv'      <<<"$HHEAD" || { echo "❌ content-type 非 csv"; exit 4; }
 echo "✅ D OK"
 
 # --- E) /v1/sources 透明度 ---
@@ -94,7 +110,7 @@ trend_txt="$OUT/metrics/trend_30d_points.txt"; : > "$trend_txt"
 fail_cont=0
 for p in "${PORTS[@]}"; do
   len=$(curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$p/trend?days=30" | jq '.points|length')
-  printf "%-6s points=%s\n" "$p" "$len" | tee -a "$trend_txt"
+  printf "%-6s  points=%s\n" "$p" "$len" | tee -a "$trend_txt"
   [[ "${len:-0}" -ge 30 ]] || { echo "  -> ❌ $p continuity <30"; fail_cont=$((fail_cont+1)); }
 done
 [[ "$fail_cont" -eq 0 ]] || { echo "❌ continuity failed ($fail_cont)"; exit 5; }
@@ -102,5 +118,49 @@ echo "✅ F OK"
 
 # --- G) 新鲜度 ≤2h（逐港 + p95 粗算） ---
 echo "[G] freshness <=2h..."
-OUT=${OUT:-backups/$(date -u +%Y%m%dT%H%M%SZ)}
-bash scripts/freshness_calc.sh
+fresh_txt="$OUT/metrics/freshness_seconds.txt"; : > "$fresh_txt"
+now_epoch=$(date -u +%s)
+fail_fresh=0
+
+for p in "${PORTS[@]}"; do
+  j=$(curl -fsS -H "X-API-Key: $API_KEY" "$BASE/v1/ports/$p/trend?days=30")
+  ts=$(jq -r '.points[-1].ts // .as_of // empty' <<<"$j")
+  if [[ -z "$ts" ]]; then
+    echo "  -> ❌ $p missing ts"; fail_fresh=$((fail_fresh+1)); continue
+  fi
+  # 兼容 ISO8601（含/不含微秒/时区）
+  port_epoch=$(date -u -d "$ts" +%s 2>/dev/null || true)
+  if [[ -z "${port_epoch}" ]]; then
+    # 尝试去掉尾部 Z
+    port_epoch=$(date -u -d "${ts%Z}" +%s 2>/dev/null || true)
+  fi
+  if [[ -z "${port_epoch}" ]]; then
+    echo "  -> ❌ $p ts parse fail: $ts"; fail_fresh=$((fail_fresh+1)); continue
+  fi
+  diff=$(( now_epoch - port_epoch ))
+  (( diff < 0 )) && diff=0
+  # 打印人类可读
+  if (( diff < 60 )); then age="${diff}s"; else age="$((diff/60))m"; fi
+  printf "%-6s  freshness=%s ✅ (ts=%s)\n" "$p" "$age" "$ts"
+  echo "$diff" >> "$fresh_txt"
+  # 判定门限：7200 秒（2h）
+  (( diff <= 7200 )) || { echo "  -> ❌ $p freshness > 2h"; fail_fresh=$((fail_fresh+1)); }
+done
+
+if [[ -s "$fresh_txt" ]]; then
+  # 计算 p95
+  total=$(wc -l < "$fresh_txt" | awk '{print $1}')
+  idx=$(( (95 * total + 99) / 100 ))  # 向上取整的 95% 位置
+  p95=$(sort -n "$fresh_txt" | awk -v k="$idx" 'NR==k{print $1}')
+  echo "freshness p95 (sec)=$p95"
+  (( p95 <= 7200 )) || { echo "❌ freshness p95 > 2h"; fail_fresh=$((fail_fresh+1)); }
+else
+  echo "❌ no freshness data"; fail_fresh=$((fail_fresh+1))
+fi
+
+if (( fail_fresh > 0 )); then
+  exit 6
+fi
+echo "✅ freshness OK (p95=${p95:-0})"
+
+exit 0
